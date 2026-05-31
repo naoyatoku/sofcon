@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Compiled binaries
+*.exe
+*.o
+*.out
+
+# Training logs
+train/log.txt
+
+# Checkpoint backups (keep the live model/checkpoint.pt only)
+*.pt.bak
+
+# Temp / scratch files
+_test_*
+_eval_snapshot.pt
+selftest.log
