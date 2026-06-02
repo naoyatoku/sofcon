@@ -377,6 +377,95 @@ std::vector<Pos> choose_move(
 }
 
 // ====================================================================== //
+//  コンテスト提出用 DLL インターフェース
+//
+//  PlayStage() が1ターンごとに呼ばれる。
+//  floor[y][x] の y=行・x=列。lands[i] の x=列・y=行。
+//
+//  コンパイル（DLL）:
+//    g++ -O2 -std=c++17 -shared -fPIC mcts_player.cpp -o mcts_player.dll
+//    ※ __declspec(dllexport) は MSVC/MinGW 向け。Linux なら不要。
+// ====================================================================== //
+
+// コンテスト側ヘッダで定義されていない場合のデフォルト
+#ifndef STAGE_Y_MAX
+#  define STAGE_Y_MAX 15
+#endif
+#ifndef STAGE_X_MAX
+#  define STAGE_X_MAX 15
+#endif
+#ifndef LANDS_SHARK_MAX
+#  define LANDS_SHARK_MAX 10
+#endif
+
+typedef struct {
+    int x;   // 取る陣地位置(列)
+    int y;   // 取る陣地位置(行)
+} TAKE_TAG;
+
+typedef struct {
+    char your_number;     // あなたのプレイヤナンバー (当日戦は1固定)
+    char number_takes;    // 1ターンに取得可能な陣地数 (3〜10, 当日戦は3固定)
+    char number_players;  // ゲームに参加する人数 (2〜5)
+} RULES_TAG;
+
+// Windows DLL エクスポート属性（Linux/WSL ではスキップ）
+#ifdef _WIN32
+#  define DLL_EXPORT extern "C" __declspec(dllexport)
+#else
+#  define DLL_EXPORT extern "C"
+#endif
+
+DLL_EXPORT
+void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
+               char*    count,
+               TAKE_TAG lands[LANDS_SHARK_MAX],
+               RULES_TAG rules)
+{
+    // ---- 1. 有効な盤面サイズを検出 ----
+    //   非壁セル（!= -1）が存在する最大行・最大列から実際のH×Wを求める。
+    //   これにより、STAGE_Y_MAX×STAGE_X_MAX より小さい盤面にも対応する。
+    int H = 0, W = 0;
+    for (int r = 0; r < STAGE_Y_MAX && r < mcts::MAXN; ++r)
+        for (int c = 0; c < STAGE_X_MAX && c < mcts::MAXN; ++c)
+            if ((signed char)floor[r][c] != mcts::WALL) {
+                if (r + 1 > H) H = r + 1;
+                if (c + 1 > W) W = c + 1;
+            }
+    // 全セルが壁（あり得ないが念のため）の場合のフォールバック
+    if (H == 0) H = (STAGE_Y_MAX < mcts::MAXN) ? STAGE_Y_MAX : mcts::MAXN;
+    if (W == 0) W = (STAGE_X_MAX < mcts::MAXN) ? STAGE_X_MAX : mcts::MAXN;
+
+    // ---- 2. char floor[y][x] → int board[row][col] 変換 ----
+    //   char は signed/unsigned 両方あり得るため (signed char) で明示的にキャスト。
+    //   値: -1=壁, 0=空き, 1〜5=各プレイヤー陣地
+    int board[mcts::MAXN][mcts::MAXN] = {};
+    for (int r = 0; r < H; ++r)
+        for (int c = 0; c < W; ++c)
+            board[r][c] = (int)(signed char)floor[r][c];
+
+    // ---- 3. MCTSで最善手を決定 ----
+    int my_id       = (int)(signed char)rules.your_number;
+    int num_players = (int)(signed char)rules.number_players;
+
+    mcts::Board b;
+    b.init(board, H, W, num_players, my_id);
+
+    double budget = mcts::budget_per_move(H * W, num_players);
+    mcts::Tree tree;
+    mcts::Move m = tree.search_timed(b, budget);
+
+    // ---- 4. 結果を出力引数に書き戻す ----
+    //   *count  : 取るマスの個数
+    //   lands[i]: {x=列, y=行} の組
+    *count = (char)m.n;
+    for (int i = 0; i < m.n; ++i) {
+        lands[i].y = m.cells[i] / W;   // row（floor の第1添字）
+        lands[i].x = m.cells[i] % W;   // col（floor の第2添字）
+    }
+}
+
+// ====================================================================== //
 //  セルフテスト（提出時は削除可）
 //  コンパイル: g++ -O2 -std=c++17 -DMCTS_SELFTEST mcts_player.cpp -o mcts_test
 // ====================================================================== //
