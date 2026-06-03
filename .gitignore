@@ -18,3 +18,11 @@ train/log.txt
 _test_*
 _eval_snapshot.pt
 selftest.log
+
+# Machine-local Claude settings (auto-generated permissions; causes cross-PC conflicts)
+.claude/settings.local.json
+# Compiled artifacts from this contest
+*.dll
+mcts_test
+test_playstage
+bench
