@@ -31,8 +31,9 @@ constexpr int EMPTY  = 0;
 // 終盤厳密解ソルバーの発動条件
 //   ENDGAME_MAX_EMPTY : 空きマスがこの数以下なら完全探索を試みる
 //   ENDGAME_NODE_CAP  : 探索ノード上限（超えたら MCTS にフォールバック）
-constexpr int  ENDGAME_MAX_EMPTY = 16;
-constexpr long ENDGAME_NODE_CAP  = 4000000;
+constexpr int    ENDGAME_MAX_EMPTY = 16;
+constexpr long   ENDGAME_NODE_CAP  = 4000000;
+constexpr double ENDGAME_MAX_MS    = 200.0;  // 壁時計上限。超えたらMCTSへフォールバック（失格防止）
 
 // ------------------------------------------------------------------ //
 //  グローバル時間管理
@@ -377,11 +378,14 @@ struct EndgameResult {
 class Endgame {
 public:
     // empty_count <= max_empty のときだけ呼ぶこと
-    EndgameResult solve(const Board& b, int me, long node_cap) {
+    EndgameResult solve(const Board& b, int me, long node_cap,
+                        double max_ms = ENDGAME_MAX_MS) {
         n_ = b.num_players;
         me_ = me;
         node_cap_ = node_cap;
         nodes_ = 0;
+        start_ = std::chrono::steady_clock::now();
+        max_ms_ = max_ms;
         memo_.clear();
 
         // 空きマスを列挙して 0..k-1 に再ラベル
@@ -437,6 +441,8 @@ public:
 private:
     int n_, me_, W_;
     long node_cap_, nodes_;
+    std::chrono::steady_clock::time_point start_;
+    double max_ms_;
     std::vector<int> cells_;
     std::vector<std::vector<int>> adj_;
     std::vector<uint32_t> moveMasks_;
@@ -480,6 +486,12 @@ private:
     //   返り値: 1=勝てる, 0=勝てない, -1=ノード上限で未解決
     int rec(uint32_t mask, int off) {
         if (++nodes_ > node_cap_) return -1;
+        // 65536ノードごとに壁時計をチェック（チェック自体の負荷を抑制）
+        if ((nodes_ & 0xffff) == 0) {
+            double el = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start_).count();
+            if (el > max_ms_) return -1;
+        }
         uint64_t key = ((uint64_t)mask << 6) | (uint32_t)off;
         auto it = memo_.find(key);
         if (it != memo_.end()) return it->second;
