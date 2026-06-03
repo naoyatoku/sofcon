@@ -43,27 +43,34 @@ static double remaining_ms() {
     return std::max(0.0, TOTAL_BUDGET_MS - elapsed_ms());
 }
 
-// 1手あたりの時間予算を推定（静的カウンタで総手数を管理）
-// board_cells: 盤面の総セル数（H*W）, num_players: プレイヤー数
-static double budget_per_move(int board_cells, int num_players) {
-    // 初回呼び出し時にステージ全体の総手数（自分の番）を推定して固定
-    static int s_total_our_turns = -1;
-    static int s_turns_done      = 0;
+// 1手あたりの時間予算をステージ検出型で計算
+//   empty_count : 現在の空きマス数（Board.empty_count をそのまま渡す）
+//   num_players : プレイヤー数
+//
+//   【アルゴリズム】
+//   ・空きマスが前回より増えた = 新ステージ開始 → ステージカウントを進める
+//   ・残り時間 ÷ 残りステージ数 = このステージの予算
+//   ・このステージの予算 ÷ 残り自分の手数 = 1手の予算
+//   ・number_takes=3 固定なので平均3マス/手で計算
+//   これにより、小盤面/大盤面どちらでも残り時間を均等に使い切れる。
+static double budget_per_move(int empty_count, int num_players) {
+    static int s_stages_done = 0;   // 開始したステージ数（1-indexed）
+    static int s_prev_empty  = -1;  // 前回呼び出し時の空きマス数
 
-    if (s_total_our_turns < 0) {
-        // 空きマス ≒ 盤面の90%、平均2マス/手、自分の番は1/num_players
-        int our_turns_per_stage = std::max(1,
-            (int)(board_cells * 0.9 / 2.0 / num_players));
-        s_total_our_turns = 50 * our_turns_per_stage;  // 50ステージ分
-    }
+    // 空きマスが増えた → 新ステージ開始
+    if (empty_count > s_prev_empty) ++s_stages_done;
+    s_prev_empty = empty_count;
 
-    double rem   = remaining_ms();
-    int rem_turns = std::max(1, s_total_our_turns - s_turns_done);
-    double budget = rem / rem_turns;
-    ++s_turns_done;
+    double rem         = remaining_ms();
+    int    stages_left = std::max(1, 50 - s_stages_done + 1);
+    double stage_budget = rem / stages_left;   // このステージに割り当てる時間
 
-    // 最低1ms、最大200ms
-    return std::max(1.0, std::min(budget, 200.0));
+    // このステージで自分があと何手打てるか（number_takes=3 固定で推算）
+    double our_turns = std::max(1.0, empty_count / 3.0 / num_players);
+    double budget    = stage_budget / our_turns;
+
+    // 最低1ms、最大500ms（盤面が小さい終盤でも使いすぎない上限）
+    return std::max(1.0, std::min(budget, 500.0));
 }
 
 // ------------------------------------------------------------------ //
@@ -366,7 +373,7 @@ std::vector<Pos> choose_move(
     if (num_sims > 0) {
         m = tree.search(b, num_sims);
     } else {
-        double budget = mcts::budget_per_move(height * width, num_players);
+        double budget = mcts::budget_per_move(b.empty_count, num_players);
         m = tree.search_timed(b, budget);
     }
 
@@ -451,7 +458,7 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
     mcts::Board b;
     b.init(board, H, W, num_players, my_id);
 
-    double budget = mcts::budget_per_move(H * W, num_players);
+    double budget = mcts::budget_per_move(b.empty_count, num_players);
     mcts::Tree tree;
     mcts::Move m = tree.search_timed(b, budget);
 
@@ -487,7 +494,7 @@ static void run_suite(int NP, int H, int W, int GAMES, std::mt19937& r) {
         while (!b.done) {
             mcts::Move chosen;
             if (b.current_player == mcts_id) {
-                double budget = mcts::budget_per_move(H * W, NP);
+                double budget = mcts::budget_per_move(b.empty_count, NP);
                 mcts::Tree t;
                 chosen = t.search_timed(b, budget);
             } else {
