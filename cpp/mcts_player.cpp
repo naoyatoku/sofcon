@@ -31,8 +31,8 @@ constexpr int EMPTY  = 0;
 // 終盤厳密解ソルバーの発動条件
 //   ENDGAME_MAX_EMPTY : 空きマスがこの数以下なら完全探索を試みる
 //   ENDGAME_NODE_CAP  : 探索ノード上限（超えたら MCTS にフォールバック）
-constexpr int    ENDGAME_MAX_EMPTY = 16;
-constexpr long   ENDGAME_NODE_CAP  = 4000000;
+constexpr int    ENDGAME_MAX_EMPTY = 20;
+constexpr long   ENDGAME_NODE_CAP  = 8000000;
 constexpr double ENDGAME_MAX_MS    = 200.0;  // 壁時計上限。超えたらMCTSへフォールバック（失格防止）
 
 // ------------------------------------------------------------------ //
