@@ -12,9 +12,12 @@
 | 1ステージ | 1ゲーム（対局）= 1ステージ |
 | 1手あたりマス数 | **3マス固定**（当日戦は `number_takes=3` 固定） |
 | 提出形式 | **DLL**。`PlayStage()` が1ターンごとに呼ばれる |
+| ステージフック | `StartStage()` / `EndStage()` が各ステージ開始・終了時に呼ばれる |
 
 ### コンテスト提出インターフェース（確定）
 ```cpp
+extern "C" __declspec(dllexport) void StartStage();   // 各ステージ開始時
+extern "C" __declspec(dllexport) void EndStage();     // 各ステージ終了時
 extern "C" __declspec(dllexport)
 void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
                char*    count,
@@ -32,17 +35,15 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
 
 | 成果物 | 状態 |
 |--------|------|
-| **`cpp/mcts_player.cpp`** | ✅ **提出本命。PlayStage() 実装済み・DLLビルド可** |
-| **終盤厳密解ソルバー** | ✅ 空き≤16マスで完全探索（パラノイド・2〜5人対応）。総当たり258局面と一致(PASS)。ソルバー有vs無で98%勝利 |
-| 時間管理（ステージ検出型） | ✅ 残り時間÷残りステージで1手予算を自動配分 |
-| 高速ロールアウト（fast_random_move） | ✅ sort+uniqueを排除し大幅高速化 |
-| MCTS 2〜5人対応 | ✅ 勝者ベースのバックプロパゲーション |
-| **実機テスト** | ✅ **36/50ステージ勝利（72%）、使用時間7.6秒** |
-| NN強化学習（汎用ver） | ✅ iter300完走済み（提出はMCTSが本命） |
+| **`prog.cpp`** | ✅ **提出本命。スレッドプール+終盤ソルバー完備** |
+| **スレッドプール並列化** | ✅ StartStage()で起動、50ステージ通して稼働。per-callスレッド生成コストゼロ |
+| **終盤厳密解ソルバー** | ✅ 空き≤20マスで完全探索（パラノイド・2〜5人対応）|
+| 時間管理（StartStage連動） | ✅ StartStage()でステージカウント→残り時間÷残りステージで予算配分 |
+| **DLLビルド環境** | ✅ MSYS2 MinGW-w64 GCC 15.2.0 インストール済み（C:\msys64） |
+| **build.bat** | ✅ ダブルクリックで prog.dll 生成 |
+| **実機テスト** | ✅ 22/30ステージ勝利（シングルスレッド版）|
 
-### 📊 時間ベースMCTS の対ランダム勝率（9×9, 各20戦）
-
-**改善後（ステージ検出型・28秒フル活用版）**
+### 📊 セルフテスト対ランダム勝率（9×9, 各20戦）
 | 人数 | 勝率 | ベースライン | 判定 |
 |---|---|---|---|
 | 2人 | **100%** | 50% | ✅ 圧勝 |
@@ -50,57 +51,48 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
 | 4人 | **60%** | 25% | ✅ 優勢 |
 | 5人 | **30%** | 20% | ✅ OK |
 
-→ 全人数でランダム超え。50ステージ通算～28秒で完走。
-→ 実機でも **36/50勝（72%）** を達成済み。
-
 ---
 
-## ▶ すぐ動かすコマンド（`C:\Users\toku\private\sofcon` で実行）
+## ▶ すぐ動かすコマンド
 
-### C++ セルフテスト（ランダムとの対戦）
-```bash
-wsl -e bash -c "cd /mnt/c/Users/toku/private/sofcon/cpp && g++ -O2 -std=c++17 -DMCTS_SELFTEST mcts_player.cpp -o mcts_test && ./mcts_test"
+### DLL ビルド（一番重要）
+```
+build.bat をダブルクリック
+→ prog.dll + libwinpthread-1.dll が生成される
+→ この2ファイルをコンテストに提出
 ```
 
-### PlayStage() 動作確認テスト
-```bash
-wsl -e bash -c "cd /mnt/c/Users/toku/private/sofcon/cpp && g++ -O2 -std=c++17 test_playstage.cpp -o test_playstage && ./test_playstage"
+コマンドラインから直接ビルドする場合：
+```bat
+set PATH=%PATH%;C:\msys64\mingw64\bin;C:\msys64\usr\bin
+g++ -O2 -std=c++14 -shared -static-libgcc -static-libstdc++ ^
+    -Wl,--whole-archive -lwinpthread -Wl,--no-whole-archive ^
+    -o prog.dll prog.cpp
+copy C:\msys64\mingw64\bin\libwinpthread-1.dll .
 ```
 
-### DLL ビルド（Windows / MinGW）
+### セルフテスト（WSL経由）
 ```bash
-g++ -O2 -std=c++17 -shared -o mcts_player.dll cpp/mcts_player.cpp
-```
-
-### 速度ベンチマーク
-```bash
-wsl -e bash -c "cd /mnt/c/Users/toku/private/sofcon/cpp && g++ -O2 -std=c++17 bench.cpp -o bench && ./bench"
+wsl -e bash -c "cd /mnt/c/Users/toku/private/sofcon/cpp && g++ -O2 -std=c++14 -pthread -DMCTS_SELFTEST mcts_player.cpp -o mcts_test && ./mcts_test"
 ```
 
 ---
 
 ## 📋 次回やることリスト（優先順）
 
-### ★最優先
-1. **実機で再テスト**（ステージ検出型に変えたので勝率が上がっているはず）
-   - 前回: 36/50勝（7.6秒使用） → 改善後: 時間をフル活用するので更に強いはず
+### ★最優先：実機テスト
+1. **スレッドプール版を実機でテスト**
+   - `build.bat` でビルド → `prog.dll` + `libwinpthread-1.dll` を提出
+   - 前回 22/30勝 → スレッドプールで改善期待
+   - もし弱くなった場合は `prog.cpp` の `pool::init_once()` を無効化して単スレッドに戻す
 
-2. **LANDS_SHARK_MAX の値を確認**
-   - コンテスト側ヘッダに定義があればそれを使う（現在のデフォルト: 10）
-   - `number_takes=3` 固定なら `lands[0..2]` しか使わないので問題なし
+2. **コンテスト側ヘッダ（entry.h）がある場合**
+   - `entry.h` をプロジェクトフォルダに置いてから `build.bat` を実行
+   - `entry.h` の中で STAGE_Y_MAX 等が定義されていれば prog.cpp の `#ifndef` が無視される
 
-3. **DLLビルドして提出**
-   ```bash
-   # MinGW（Windows）でDLLビルド
-   g++ -O2 -std=c++17 -shared -o mcts_player.dll cpp/mcts_player.cpp
-   ```
-   - コンテスト側ヘッダ（`STAGE_Y_MAX` 等の定数定義）があれば先に `#include`
-
-### 余裕があれば
-4. **5人専用NNファインチューニング**（現状MCTSが強いので優先度低）
-   ```bash
-   python train/self_play.py --iters 150 --sims 50 --games 4 --players_min 5 --players_max 5
-   ```
+### 必要なら
+3. **スレッドプールが不安定な場合** → `pool::init_once()` をコメントアウトしてシングルスレッドに
+4. **`libwinpthread-1.dll` が配布できない場合** → winlibs win32スレッド版に移行（GitHub: brechtsanders/winlibs_mingw で "win32" 版を手動ダウンロード）
 
 ---
 
@@ -108,25 +100,45 @@ wsl -e bash -c "cd /mnt/c/Users/toku/private/sofcon/cpp && g++ -O2 -std=c++17 be
 
 ```
 sofcon/
-├── RESUME.md             ← このファイル
+├── RESUME.md               ← このファイル
+├── prog.cpp                ★提出本命（これ1ファイルで完結）
+│                             - MCTS + 終盤ソルバー + スレッドプール
+│                             - StartStage() / EndStage() / PlayStage() 実装済み
+├── build.bat               ★DLLビルドスクリプト（ダブルクリックで実行）
+│
 ├── cpp/
-│   ├── mcts_player.cpp   ★提出本命（PlayStage() 実装済み・これ1ファイルで完結）
-│   ├── test_playstage.cpp  PlayStage() 動作確認テスト
-│   ├── bench.cpp         速度ベンチ
-│   ├── inference.h       NN提出時用（現在不使用）
-│   └── inference_impl.h  同上
-├── game/                 Python版ゲームエンジン（開発用）
-├── model/                ニューラルネット（開発用）
-├── train/                自己対戦学習スクリプト（開発用）
-└── tools/                評価・エクスポートツール（開発用）
+│   ├── mcts_player.cpp     開発・テスト用（prog.cppと同内容のスタンドアロン版）
+│   ├── test_playstage.cpp  PlayStage()動作確認テスト
+│   └── bench.cpp           速度ベンチ
+├── game/                   Python版ゲームエンジン（開発用）
+├── model/                  ニューラルネット（開発用・提出不要）
+├── train/                  自己対戦学習スクリプト（開発用）
+└── tools/                  評価ツール（開発用）
 ```
 
 ## ⚠ ハマりどころメモ
 
-- Python実行は必ず `C:\Users\toku\private\sofcon` 直下から（`game` 等のimportのため）
-- C++コンパイルはWSL経由: `wsl -e bash -c "cd /mnt/c/... && g++ ..."`
-- DLLの `__declspec(dllexport)` はLinux/WSLでは無効 → `_WIN32` guard で切り替え済み
-- `floor` 配列の型は `char`（signed/unsigned 曖昧）→ `(signed char)` キャストで確実に -1 を認識
+### ビルド関連
+- **g++ は PATH に自動追加されない** → `C:\msys64\mingw64\bin;C:\msys64\usr\bin` が必要
+  （`build.bat` は内部で自動追加しているので大丈夫）
+- **entry.h** はコンテスト側が配布するヘッダ。なければ `build.bat` がダミーを自動生成
+- **提出は2ファイル**: `prog.dll` + `libwinpthread-1.dll`（同じフォルダに置く）
+
+### コード関連
 - `floor[y][x]` の軸順注意：y=行（第1添字）、x=列（第2添字）
 - `lands[i].y=行, lands[i].x=列`（直感と逆になりやすい）
-- C++ MCTSで `std::vector<Node>` の参照を `push_back` をまたいで保持するとuse-after-freeでセグフォ → インデックス参照に修正済み
+- `(signed char)floor[r][c]` キャストで確実に -1 を認識
+- スレッドプールは `StartStage()` 初回のみ起動、`detach()` 済みなので終了処理不要
+
+### スレッドプールの動作
+```
+StartStage() 初回
+  → hardware_concurrency() 本のスレッドを起動して待機
+
+PlayStage() 毎ターン
+  → condition_variable で全スレッドを起こす (~0.1ms)
+  → 全スレッドが並列MCTS実行
+  → 多数決で最善手を返す
+
+EndStage() → 何もしない（スレッドは次ステージも稼働継続）
+```
