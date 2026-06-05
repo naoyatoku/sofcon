@@ -6,12 +6,22 @@
  *    プロセス起動からの経過時間をグローバルに管理し、
  *    残り時間÷残り推定手数 で 1手あたりの予算を自動計算する。
  *
+ *  【マルチスレッド（ルート並列化）】
+ *    論理コア数分の独立した MCTS ツリーを並列実行し、
+ *    各スレッドの Best Move を多数決で決定する（Root Parallelization）。
+ *    スレッド間で共有状態がないため mutex 不要。
+ *
+ *  【Windows 優先度】
+ *    初回呼び出し時にプロセス優先度を ABOVE_NORMAL に引き上げ、
+ *    他プロセスより多くの CPU 時間を確保する。
+ *
  *  ルール:
  *    board[r][c]:  -1=壁, 0=空き, 1以上=各プレイヤーが掘った
  *    1ターン 1〜3 マスの「直交連結した空きマス」を掘る
  *    勝敗: 最後の空きマスを掘ったプレイヤーの勝ち（normal play）
  *
- *  コンパイル:  g++ -O2 -std=c++17 mcts_player.cpp -o mcts_player
+ *  コンパイル（シングルスレッド）: g++ -O2 -std=c++17 mcts_player.cpp -o mcts_player
+ *  コンパイル（マルチスレッド）:   g++ -O2 -std=c++17 -pthread mcts_player.cpp -o mcts_player
  */
 
 #include <vector>
@@ -21,6 +31,13 @@
 #include <random>
 #include <chrono>
 #include <unordered_map>
+#include <thread>
+#include <mutex>
+
+// Windows プロセス優先度 API（MSVC / MinGW）
+#ifdef _WIN32
+#  include <windows.h>
+#endif
 
 namespace mcts {
 
@@ -122,8 +139,12 @@ struct Move {
 static const int DR[4] = {-1,  1,  0, 0};
 static const int DC[4] = { 0,  0, -1, 1};
 
-static std::mt19937 rng(
-    (uint32_t)std::chrono::steady_clock::now().time_since_epoch().count());
+// thread_local: スレッドごとに独立した乱数生成器（レース条件なし）
+// スレッド ID のハッシュを混ぜてシードを分散させる
+static thread_local std::mt19937 rng{
+    (uint32_t)(std::chrono::steady_clock::now().time_since_epoch().count()
+               ^ (std::hash<std::thread::id>{}(std::this_thread::get_id()) * 2654435761u))
+};
 
 // ------------------------------------------------------------------ //
 //  合法手生成（展開フェーズ用）
@@ -525,6 +546,82 @@ private:
     }
 };
 
+// ------------------------------------------------------------------ //
+//  ルート並列化 MCTS
+//
+//  使用可能な論理コア数分の独立した Tree を std::thread で並列実行する。
+//  各スレッドは同じ root_board から始まるが、thread_local の乱数で異なる
+//  探索パスをたどる（= Root Parallelization）。
+//  スレッド間に共有状態がないため mutex / atomic 不要。
+//  終了後、各スレッドの Best Move を多数決で最終手を決定する。
+//
+//  num_threads <= 1 のときは通常のシングルスレッド探索にフォールバック。
+// ------------------------------------------------------------------ //
+
+// 論理コア数を取得（検出失敗時は 1）、上限 MAX_THREADS
+static constexpr int MAX_THREADS = 16;
+static int get_num_threads() {
+    int n = (int)std::thread::hardware_concurrency();
+    if (n <= 0) n = 1;
+    return (n < MAX_THREADS) ? n : MAX_THREADS;
+}
+
+// ムーブを 32bit キーに圧縮（n << 24 | cells[0]<<16 | cells[1]<<8 | cells[2]）
+static uint32_t move_key(const Move& m) {
+    return ((uint32_t)(uint8_t)m.n        << 24)
+         | ((uint32_t)(uint8_t)m.cells[0] << 16)
+         | ((uint32_t)(uint8_t)m.cells[1] <<  8)
+         | ((uint32_t)(uint8_t)m.cells[2]);
+}
+
+static Move parallel_search(const Board& root_board, double budget_ms, int num_threads) {
+    // スレッド 1 本ならオーバーヘッドなしでシングル動作
+    if (num_threads <= 1 || root_board.done) {
+        Tree t;
+        return t.search_timed(root_board, budget_ms);
+    }
+
+    std::vector<Move> results(num_threads, Move{{0,0,0},0});
+
+    // 各スレッドが独立した Tree で search_timed を実行
+    {
+        std::vector<std::thread> workers;
+        workers.reserve(num_threads);
+        for (int i = 0; i < num_threads; ++i) {
+            workers.emplace_back([&, i]() {
+                Tree t;
+                results[i] = t.search_timed(root_board, budget_ms);
+            });
+        }
+        for (auto& w : workers) w.join();
+    }
+
+    // 多数決：最も多くのスレッドが推薦した手を採用
+    std::unordered_map<uint32_t, int>  votes;
+    std::unordered_map<uint32_t, Move> mv_for;
+    for (const Move& m : results) {
+        uint32_t k = move_key(m);
+        if (++votes[k] == 1) mv_for[k] = m;
+    }
+    uint32_t best_k = 0; int best_v = -1;
+    for (auto& [k, v] : votes)
+        if (v > best_v) { best_v = v; best_k = k; }
+    return mv_for[best_k];
+}
+
+// ------------------------------------------------------------------ //
+//  Windows プロセス優先度の引き上げ（初回呼び出し時のみ実行）
+//  ABOVE_NORMAL_PRIORITY_CLASS: 通常より少し高い。TIME_CRITICAL は避ける。
+// ------------------------------------------------------------------ //
+static void boost_process_priority_once() {
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+#ifdef _WIN32
+        SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+#endif
+    });
+}
+
 } // namespace mcts
 
 // ====================================================================== //
@@ -559,12 +656,13 @@ std::vector<Pos> choose_move(
         }
     }
 
-    mcts::Tree tree;
     if (num_sims > 0) {
+        mcts::Tree tree;
         m = tree.search(b, num_sims);
     } else {
         double budget = mcts::budget_per_move(b.empty_count, num_players);
-        m = tree.search_timed(b, budget);
+        int    nth    = mcts::get_num_threads();
+        m = mcts::parallel_search(b, budget, nth);
     }
 
     std::vector<Pos> result;
@@ -619,6 +717,9 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
                TAKE_TAG lands[LANDS_SHARK_MAX],
                RULES_TAG rules)
 {
+    // ---- 0. 初回呼び出し時にプロセス優先度を引き上げる ----
+    mcts::boost_process_priority_once();
+
     // ---- 1. 有効な盤面サイズを検出 ----
     //   非壁セル（!= -1）が存在する最大行・最大列から実際のH×Wを求める。
     //   これにより、STAGE_Y_MAX×STAGE_X_MAX より小さい盤面にも対応する。
@@ -658,8 +759,8 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
     }
     if (!decided) {
         double budget = mcts::budget_per_move(b.empty_count, num_players);
-        mcts::Tree tree;
-        m = tree.search_timed(b, budget);
+        int    nth    = mcts::get_num_threads();
+        m = mcts::parallel_search(b, budget, nth);
     }
 
     // ---- 4. 結果を出力引数に書き戻す ----
