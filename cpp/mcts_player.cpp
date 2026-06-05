@@ -20,8 +20,8 @@
  *    1ターン 1〜3 マスの「直交連結した空きマス」を掘る
  *    勝敗: 最後の空きマスを掘ったプレイヤーの勝ち（normal play）
  *
- *  コンパイル（シングルスレッド）: g++ -O2 -std=c++17 mcts_player.cpp -o mcts_player
- *  コンパイル（マルチスレッド）:   g++ -O2 -std=c++17 -pthread mcts_player.cpp -o mcts_player
+ *  コンパイル（シングルスレッド）: g++ -O2 -std=c++14 mcts_player.cpp -o mcts_player
+ *  コンパイル（マルチスレッド）:   g++ -O2 -std=c++14 -pthread mcts_player.cpp -o mcts_player
  */
 
 #include <vector>
@@ -604,8 +604,8 @@ static Move parallel_search(const Board& root_board, double budget_ms, int num_t
         if (++votes[k] == 1) mv_for[k] = m;
     }
     uint32_t best_k = 0; int best_v = -1;
-    for (auto& [k, v] : votes)
-        if (v > best_v) { best_v = v; best_k = k; }
+    for (const auto& kv : votes)           // C++11 互換（構造化束縛を使わない）
+        if (kv.second > best_v) { best_v = kv.second; best_k = kv.first; }
     return mv_for[best_k];
 }
 
@@ -678,7 +678,7 @@ std::vector<Pos> choose_move(
 //  floor[y][x] の y=行・x=列。lands[i] の x=列・y=行。
 //
 //  コンパイル（DLL）:
-//    g++ -O2 -std=c++17 -shared -fPIC mcts_player.cpp -o mcts_player.dll
+//    g++ -O2 -std=c++14 -shared -fPIC mcts_player.cpp -o mcts_player.dll
 //    ※ __declspec(dllexport) は MSVC/MinGW 向け。Linux なら不要。
 // ====================================================================== //
 
@@ -775,7 +775,7 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
 
 // ====================================================================== //
 //  セルフテスト（提出時は削除可）
-//  コンパイル: g++ -O2 -std=c++17 -DMCTS_SELFTEST mcts_player.cpp -o mcts_test
+//  コンパイル: g++ -O2 -std=c++14 -DMCTS_SELFTEST mcts_player.cpp -o mcts_test
 // ====================================================================== //
 #ifdef MCTS_SELFTEST
 #include <cstdio>
