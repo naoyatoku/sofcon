@@ -26,3 +26,24 @@ selftest.log
 mcts_test
 test_playstage
 bench
+
+# Visual Studio
+.vs/
+x64/
+Debug/
+Release/
+*.obj
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.exe
+*.idb
+*.ipch
+*.tlog
+*.lastbuildstate
+*.recipe
+*.log
+*.CppClean.log
+*.FileListAbsolute.txt
+*.vcxproj.user
