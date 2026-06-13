@@ -294,6 +294,9 @@ public:
                                                                     //  visit = e^1(2.7) -> 1 , e^3(2.7^3=20.0855) -> 3 , e^10(2.7^10=59049) -> 10
             double best     = -1e18;                                //bestが、めちゃ小さい値。
             int    best_c   = n.children[0];                       //best_c:0番目の子供
+            //========================================================================
+            //  全子供について、一番価値の高い子供のidx(best_c)を見つける。
+            //========================================================================
             for (int ci : n.children) {                                         //全子供
                 const Node& c = nodes[ci];                                      //c:子供ノード
                 double q = (c.visit > 0) ? (c.value_sum / c.visit) : 0.0;       //q:value_sim/visit もしくは 0 => ivisit当たりの価値。
@@ -308,8 +311,13 @@ public:
                                                                                 //qが小さいうちは、まだ探索していない道を探すuが優位になり、新しい試行をしようとして、
                                                                                 //qが大きくなっていくと、実績のある手を選択するようになる。・・すごい。面白い。
             }
+            //========================================================================
+            //  ここまで来たら、子供の中で一番価値の高いものがbest_cに入っている。
+            //========================================================================
             idx = best_c;
         }
+        //toku 子供がいない、展開していない、もしくはゲーム終了しているノードが選択されたら、idxを返す。
+        //      つまり、これ以上選択できないノードが選択されたら、そこをleafとして返す。
         return idx;
     }
 
@@ -317,6 +325,13 @@ public:
     // N人対応バックプロパゲーション:
     //  勝者の手番を持つノードだけに、「勝ち」をつける。
     //   idx:選択したleafノードのidx、winner:ロールアウトの勝者 
+    //  ---
+    //  toku idxのところのノードで、rolloutした結果のwinner(つまり、このidxから見通して勝つのが誰かを予想した結果、)
+    //      parのcurrect_player(このidxを選択した人)がwinnerなら(つまりこのidxを打った人が勝つと予想した)場合、このidxの価値を一つ上げる。
+    //      visitも増える。
+    //      これを、さらにその親にさかのぼっていく。さらにその親がwinnerならば、このparも価値が上がる。
+    //      勝っても負けても、visitはインクリメントする。
+    //  →この価値判定と、visit回数を足していきrootまでさかのぼらせるのをバックプロパゲーションと呼んでいる。
     //=============================================================================
     void backprop(int idx, int winner) {
         while (idx != -1) {
@@ -342,7 +357,10 @@ public:
     //  制限時間内で最小手を見つける。
     // rood_board   :   Board盤面obj
     // budget_ms    ;   制限時間
-    //==================================================================
+
+    //  ==================================================================
+    //      badget_timedで
+    //  ==================================================================
     Move search_timed(const Board& root_board, double budget_ms) {
         auto t0 = std::chrono::steady_clock::now();                     //toku 時間計測のため
         nodes.clear();                                                  //木のノードをクリアする。
@@ -356,7 +374,8 @@ public:
 
 
         //================================================================================
-        //  予算時間内に、Tree上の子ノード全部について、ロールアウト（）
+        //  予算時間内に、rootの子のうち、一番価値の高いものを見つける。
+        //  このroot_boardは、この関数が呼ばれた時点での盤面です。この盤面での、一番いい手を見つける。
         //=================================================================================
         int sims = 0;                                                   //
         while (true) {
@@ -369,10 +388,14 @@ public:
 
             int leaf = select(root);                                        //一番価値の高い子ノードを選択します。(leafとする)
             int winner;
+            //もし子供がない（leafがもうない）場合は、doneになっているはずなので、勝者を保存する。
+            //もしくは子供でゲーム終了になった
             if (nodes[leaf].board.done) {                                   //もしleafでゲーム終了したら
                 winner = nodes[leaf].board.winner;                          //勝者をwinnerに保存
             } else {
+                //ゲームがまだ終わってない場合、leafを展開します。
                 if (!nodes[leaf].expanded) expand(leaf);                    //そうでない場合、expandしてないノードであればexpandし、
+                //
                 winner = rollout(nodes[leaf].board);                        //ロールアウトして勝者をwinnerに保存する。
                                                                             //  →ロールアウトは、ランダムに手を選び続けてゲーム終了まで進める。勝者を返す。
             }
@@ -390,13 +413,13 @@ public:
         expand(root);
         if (nodes[root].children.empty()) return Move{{0,0,0},0};
         for (int s = 0; s < num_sims; ++s) {
-            int leaf = select(root);
+            int leaf = select(root);                            // 一番価値の高い子ノードを選択します。(leafとする)
             int winner;
             if (nodes[leaf].board.done) {
-                winner = nodes[leaf].board.winner;
+                winner = nodes[leaf].board.winner;              //leafで終わっていれば、
             } else {
-                if (!nodes[leaf].expanded) expand(leaf);
-                winner = rollout(nodes[leaf].board);
+                if (!nodes[leaf].expanded) expand(leaf);        //expandはするが・・、ここではそこまで。
+                winner = rollout(nodes[leaf].board);            //leafの盤面を使ったロールアウトした勝者をwinnerとする。
             }
             backprop(leaf, winner);         //
         }
@@ -439,29 +462,35 @@ public:
 
         // 空きマスを列挙して 0..k-1 に再ラベル
         cells_.clear();
-        int idx_of[MAXN * MAXN];
-        for (int i = 0; i < MAXN * MAXN; ++i) idx_of[i] = -1;
-        for (int r = 0; r < b.H; ++r)
-            for (int c = 0; c < b.W; ++c)
-                if (b.g[r][c] == EMPTY) {
-                    idx_of[r * b.W + c] = (int)cells_.size();
-                    cells_.push_back(r * b.W + c);
+        int idx_of[MAXN * MAXN];                                                        //15×15分
+        for (int i = 0; i < MAXN * MAXN; ++i) idx_of[i] = -1;                           //0-225 -1で初期化
+        for (int r = 0; r < b.H; ++r)                                                   //盤面のh
+            for (int c = 0; c < b.W; ++c)                                               //盤面のw
+                if (b.g[r][c] == EMPTY) {                                               //空き地ならば、
+                    idx_of[r * b.W + c] = (int)cells_.size();                           //idx_ofの該当箇所に cells_.size()(=> vector<int>) : 最終の（今回追加するcells_のindex）
+                    cells_.push_back(r * b.W + c);                                      //idx_of
                 }
-        int k = (int)cells_.size();
-        W_ = b.W;
-        if (k == 0 || k > 30) return {};   // 32bit マスクの安全域
+        int k = (int)cells_.size();     //kは次のインデックス
+        W_ = b.W;                                   //W_は盤面の広さ
+        if (k == 0 || k > 30) return {};   // 32bit マスクの安全域      //kは、盤面上の空きますの数です。（連結してるしてないに関係なし）
 
         // 隣接（4連結）を構築
-        adj_.assign(k, {});
+        adj_.assign(k, {});                                     //k個分のからのvector配列
+
+        //すべての空きますに対する操作
         for (int i = 0; i < k; ++i) {
-            int r = cells_[i] / b.W, c = cells_[i] % b.W;
-            for (int d = 0; d < 4; ++d) {
-                int rr = r + DR[d], cc = c + DC[d];
-                if (rr < 0 || rr >= b.H || cc < 0 || cc >= b.W) continue;
-                int fi = rr * b.W + cc;
-                if (idx_of[fi] >= 0) adj_[i].push_back(idx_of[fi]);
+            int r = cells_[i] / b.W, c = cells_[i] % b.W;       //cells_[i]の座標( c , r )を取得
+            //iのマスについて、4方向を調べる。
+            for (int d = 0; d < 4; ++d) {                       //d : 0 -  4 四方向らしい。
+                int rr = r + DR[d], cc = c + DC[d];                         //(r,c)の左右・上下隣接の場所
+                if (rr < 0 || rr >= b.H || cc < 0 || cc >= b.W) continue;   // ステージ外は除外
+                int fi = rr * b.W + cc;                                     //fiはその場所のインデックス
+                if (idx_of[fi] >= 0) adj_[i].push_back(idx_of[fi]);         //fiが空きならばadj_に足す。
             }
         }
+        //=====================================================
+        //  ここで adj_ は、cells_[]
+
 
         // 連結する 1〜3 マスの手をすべてビットマスクで列挙
         buildMoves(k);
@@ -597,7 +626,7 @@ std::vector<Pos> choose_move(
 
     mcts::Move m;
     // --- 終盤厳密解：空きが少なければ完全探索で勝ちを強制 ---
-    if (b.empty_count <= mcts::ENDGAME_MAX_EMPTY) {
+    if (b.empty_count <= mcts::ENDGAME_MAX_EMPTY) {             //残りますが
         mcts::Endgame eg;
         mcts::EndgameResult er = eg.solve(b, my_id, mcts::ENDGAME_NODE_CAP);
         if (er.solved && er.win) {
@@ -749,11 +778,15 @@ static void run_suite(int NP, int H, int W, int GAMES, std::mt19937& r) {
         while (!b.done) {
             mcts::Move chosen;
             if (b.current_player == mcts_id) {                                  //プレイヤー手番のとき
+                //===================================================
+                //  自分の手番ならば、制限時間を決める
+                //===================================================
                 double budget = mcts::budget_per_move(b.empty_count, NP);       //toku これはこの手で使える時間のこと。
                 mcts::Tree t;                                                   //ノードを用意するんですかね。
                 //                                                              //toku このtreeというのが、いろいろ機能をもっているようだ。
                 //===================================================
                 //  toku ここがアルゴリズム
+                //  この盤面での最善手を見つける。
                 //===================================================
                 chosen = t.search_timed(b, budget);                             //toku 盤面を渡し、時間内に良い手を見つける。
             } else {                                                            //他のプレイヤーの手番のとき、
@@ -761,6 +794,7 @@ static void run_suite(int NP, int H, int W, int GAMES, std::mt19937& r) {
                 chosen = mv[r() % mv.size()];                                   //      chosenは、その中でランダムに選んだもの:r()%size()
             }
             //これを盤面に反映させる。
+            //aplyすると、手番が変わります。
             b.apply(chosen.cells, chosen.n);
         }
         //b.doneが!=0のとき試合終了。
