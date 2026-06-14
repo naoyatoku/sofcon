@@ -470,8 +470,14 @@ public:
                     idx_of[r * b.W + c] = (int)cells_.size();                           //idx_ofの該当箇所に cells_.size()(=> vector<int>) : 最終の（今回追加するcells_のindex）
                     cells_.push_back(r * b.W + c);                                      //idx_of
                 }
+
+        //cells_ : 空き値の場所の配列。kが個数。
+
         int k = (int)cells_.size();     //kは次のインデックス
+
         W_ = b.W;                                   //W_は盤面の広さ
+
+        //32bitのbit割付を行うので30までを安全とする。
         if (k == 0 || k > 30) return {};   // 32bit マスクの安全域      //kは、盤面上の空きますの数です。（連結してるしてないに関係なし）
 
         // 隣接（4連結）を構築
@@ -485,28 +491,39 @@ public:
                 int rr = r + DR[d], cc = c + DC[d];                         //(r,c)の左右・上下隣接の場所
                 if (rr < 0 || rr >= b.H || cc < 0 || cc >= b.W) continue;   // ステージ外は除外
                 int fi = rr * b.W + cc;                                     //fiはその場所のインデックス
-                if (idx_of[fi] >= 0) adj_[i].push_back(idx_of[fi]);         //fiが空きならばadj_に足す。
+                if (idx_of[fi] >= 0) adj_[i].push_back(idx_of[fi]);         //fiが空きならばadj_に足す。(idx_ofは、r*c座標→cellsのindexへの変換tbl)
             }
         }
         //=====================================================
-        //  ここで adj_ は、cells_[]
+        //  ここで adj_ は、cells_ [0]          [1]              [2]            [3]  [4]  [5]  [6] ...... [k-1]
+        //                         |            |                |              |
+        //      adj_[0]           + [1][2][3]  |                |              |
+        //         adj_[1]                      + [0][5]         |              |
+        //            adj_[2                                     + [0] [2]      + [0][7][9][8]
+        //                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        //                          各空きセルに隣接する空きセルの列挙。数字が小さいと、すでに
 
 
         // 連結する 1〜3 マスの手をすべてビットマスクで列挙
         buildMoves(k);
+        //ここの処理で
+        //moveMasks_    にすべての打ち手が列挙されている。
+
 
         uint32_t full = (k == 32) ? 0xffffffffu : ((1u << k) - 1u);
         int cur_off = 0;   // 根は自分の手番（off=0）
 
         // 根：自分の手番。勝ちを強制できる手を探す
         EndgameResult res;
-        for (uint32_t mv : moveMasks_) {
+        for (uint32_t mv : moveMasks_) {                   //全部の手について調べていく。
+
             if ((mv & full) != mv) continue;               // 全セルが空きでない
             uint32_t nm = full & ~mv;
             bool win;
             if (nm == 0) win = true;                       // 最後のマスを取った→自分勝ち
             else {
-                int r = rec(nm, 1 % n_);
+                //今回の手を打ったときに、勝てるのかどうか
+                int r = rec(nm, 1 % n_);            //nmは、この手を打ったときの盤面。n_は、プレイ人数。1%n_は、自分を0として、次の人。(1)
                 if (r < 0) return {};                       // ノード上限→未解決
                 win = (r == 1);
             }
@@ -526,31 +543,53 @@ private:
     std::vector<uint32_t> moveMasks_;
     std::unordered_map<uint64_t, char> memo_;
 
+        //=====================================================
+        //  ここで adj_ は、cells_ [0]             [1]              [2]            [3]  [4]  [5]  [6] ...... [k-1]
+        //                         |               |                |              |
+        //                         + [1][2][3][4]  |                |              |
+        //                                         + [0][5]         |              |
+        //                                                       + [0] [2]      + [0][7][9][8]
+        //                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        //                          各空きセルに隣接する空きセルの列挙。数字が小さいと、すでに
+
     void buildMoves(int k) {
         moveMasks_.clear();
         std::vector<uint32_t> tmp;
         for (int i = 0; i < k; ++i) {
             tmp.push_back(1u << i);                          // size 1
             for (int j : adj_[i]) {
-                if (j < i) continue;
+                if (j < i) continue;    //これは、前の空きセル(indexが若い)との隣接なので、すでにtmpに入っている：重複しているので入れない。
+                                        //  
                 tmp.push_back((1u << i) | (1u << j));         // size 2
             }
         }
+        //================================================================================
+        //  ここまで1,2連結の列挙tmp : のビット割付で、cells_上のインデックス組み合わせを表現
+        //================================================================================
+
         // size 3：連結トリプル（i<j 辺に、i か j の隣接 e を足す）
         for (int i = 0; i < k; ++i)
             for (int j : adj_[i]) {
                 if (j < i) continue;
-                uint32_t base = (1u << i) | (1u << j);
-                for (int src : {i, j})
-                    for (int e : adj_[src]) {
-                        if (e == i || e == j) continue;
-                        tmp.push_back(base | (1u << e));
+                uint32_t base = (1u << i) | (1u << j);              //  2連結をbaseとして
+                for (int src : {i, j})                              //  src : i or j (2連結のどちらかのセル。)
+                    for (int e : adj_[src]) {                       //  両方の連結セルに対して、該当二つのセル以外の隣接セルを
+                        if (e == i || e == j) continue;             //  どちらかそのものならば候補にしない。
+                        tmp.push_back(base | (1u << e));            //  それ以外のセルを候補にする。
                     }
             }
+        //==========================================================================================
+        //  ここまでで3連結までを表現したすべての取りうる手すべて(vector<unsigned int>tmp)
+        //  を列挙できた。
+        //==========================================================================================
         // 重複除去
         std::sort(tmp.begin(), tmp.end());
         tmp.erase(std::unique(tmp.begin(), tmp.end()), tmp.end());
-        moveMasks_.swap(tmp);
+        //        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        //               すべての要素から、ユニークなものを前にもってき、(unique)その戻り値は重複部分の先頭。
+        //                  ～終わりまで削除。→ ユニークだけ残る。
+        //  
+        moveMasks_.swap(tmp);       //moveMasks_へ全要素を移す。
     }
 
     Move decode(uint32_t mv) {
@@ -562,36 +601,55 @@ private:
 
     // mask の状態・手番 off で「自分(off=0基準のme)が勝ちを強制できるか」
     //   返り値: 1=勝てる, 0=勝てない, -1=ノード上限で未解決
+    //====================================================================================================
+    //  これは全部の打ち手の組み合わせで、自分が勝ったパターンをmemo_に残す
+
+    //====================================================================================================
     int rec(uint32_t mask, int off) {
-        if (++nodes_ > node_cap_) return -1;
+        //再帰呼び出し
+        if (nodes_ > node_cap_) return -1;                        //最初0スタートで、node_cap = 800万らしい。
         // 65536ノードごとに壁時計をチェック（チェック自体の負荷を抑制）
+        //時間制限を設ける。
         if ((nodes_ & 0xffff) == 0) {
             double el = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - start_).count();
             if (el > max_ms_) return -1;
         }
-        uint64_t key = ((uint64_t)mask << 6) | (uint32_t)off;
-        auto it = memo_.find(key);
-        if (it != memo_.end()) return it->second;
+        //=========================================================
+        //  key : 盤面＋プレイヤー情報。
+        //=========================================================
+        //  mask : 31bitの空きマスのbit割り付け。
+        //  (盤面情報(空きマス情報) << 6)   +   プレイヤー手番 ( 0 : 自分 , offは1から始まる敵プレイヤー)
+        //=========================================================
+        uint64_t key = ((uint64_t)mask << 6) | (uint32_t)off;       //maskが盤面で、offがプレイヤー番号。(0が自分)
+        //
+        auto it = memo_.find(key);                          //  同じキーのものがmemo_にあるのかどうか。memo_は、solve()呼ばれた時点でクリア。
+        if (it != memo_.end()) return it->second;           //  map(key,val): first = key , second =valのこと。
+                                                            //  あれば、valを返す。(すでに探索済ということですかね。)
 
-        bool my_turn = (off == 0);
+        bool my_turn = (off == 0);                                                  //my_turnかどうかを表す
         // my_turn: 1手でも勝てれば勝ち / 相手手番: 全手で勝てないと勝ちにならない
-        int result = my_turn ? 0 : 1;
-        bool decided = false;
+        int result = my_turn ? 0 : 1;                                               //resultは、my_turnならば 0 , そうでない場合は 1
+        bool decided = false;                                                       // 決定？
 
-        for (uint32_t mv : moveMasks_) {
-            if ((mv & mask) != mv) continue;                 // 適用不可
-            uint32_t nm = mask & ~mv;
+        for (uint32_t mv : moveMasks_) {                                            //全部の打ち手について
+            if ((mv & mask) != mv) continue;                 // 適用不可            //maskは、自分が打った手です。
+                                                                                    //mv
+
+            uint32_t nm = mask & ~mv;                                               //打ちます。
             int child;
-            if (nm == 0) {
+            if (nm == 0) {                                                          //もしここでゲーム終了。
                 // この手番のプレイヤーが最後のマスを取った → そのプレイヤーの勝ち
-                child = my_turn ? 1 : 0;
+                child = my_turn ? 1 : 0;                                            //もし自分の手番ならば終了。
             } else {
-                int r = rec(nm, (off + 1) % n_);
-                if (r < 0) return -1;                        // 上限伝播
-                child = r;
+                int r = rec(nm, (off + 1) % n_);                                   //そうでない場合は、手番を増やして、再帰呼びだし。
+                if (r < 0) return -1;                        // 上限伝播            //-1が返ってきたら、探索を強制終了。
+                child = r;                                                         //それ以外は、一番深いところまで行けた。そのときに勝ったかどうか(1/0)
+                                                                                    //child
             }
             if (my_turn) {
+                //例えば、まだステージが終了しないけど、この先の再帰呼び出しで、自分が勝った場合、child = 1 が返ってくる。
+                //      こんかい自分の手番でステージ終了した。 = 1.
                 if (child == 1) { result = 1; decided = true; break; }  // 勝ち手発見
             } else {
                 if (child == 0) { result = 0; decided = true; break; }  // 相手が阻止可能
