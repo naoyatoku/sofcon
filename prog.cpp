@@ -325,14 +325,19 @@ public:
                 if (used >= budget_ms) break;
             }
             int leaf = select(root);
-            int winner;
+            int winner, bp_from;
             if (nodes[leaf].board.done) {
-                winner = nodes[leaf].board.winner;
+                winner  = nodes[leaf].board.winner;
+                bp_from = leaf;
             } else {
                 if (!nodes[leaf].expanded) expand(leaf);
-                winner = rollout(nodes[leaf].board);
+                // 子ノードをランダムに1つ選びrollout
+                // → 1手深い盤面から評価でき、子の統計も正確になる
+                int ci  = nodes[leaf].children[rng() % nodes[leaf].children.size()];
+                winner  = rollout(nodes[ci].board);
+                bp_from = ci;
             }
-            backprop(leaf, winner);
+            backprop(bp_from, winner);
             ++sims;
         }
         return best_child(root);

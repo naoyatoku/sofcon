@@ -331,14 +331,17 @@ public:
                 if (used >= budget_ms) break;
             }
             int leaf = select(root);
-            int winner;
+            int winner, bp_from;
             if (nodes[leaf].board.done) {
-                winner = nodes[leaf].board.winner;
+                winner  = nodes[leaf].board.winner;
+                bp_from = leaf;
             } else {
                 if (!nodes[leaf].expanded) expand(leaf);
-                winner = rollout(nodes[leaf].board);
+                int ci  = nodes[leaf].children[rng() % nodes[leaf].children.size()];
+                winner  = rollout(nodes[ci].board);
+                bp_from = ci;
             }
-            backprop(leaf, winner);
+            backprop(bp_from, winner);
             ++sims;
         }
         return best_child(root);
@@ -353,14 +356,17 @@ public:
         if (nodes[root].children.empty()) return Move{{0,0,0},0};
         for (int s = 0; s < num_sims; ++s) {
             int leaf = select(root);
-            int winner;
+            int winner, bp_from;
             if (nodes[leaf].board.done) {
-                winner = nodes[leaf].board.winner;
+                winner  = nodes[leaf].board.winner;
+                bp_from = leaf;
             } else {
                 if (!nodes[leaf].expanded) expand(leaf);
-                winner = rollout(nodes[leaf].board);
+                int ci  = nodes[leaf].children[rng() % nodes[leaf].children.size()];
+                winner  = rollout(nodes[ci].board);
+                bp_from = ci;
             }
-            backprop(leaf, winner);
+            backprop(bp_from, winner);
         }
         return best_child(root);
     }
