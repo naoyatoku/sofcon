@@ -239,7 +239,26 @@ public:
     }
 
     int rollout(Board b) {
-        while (!b.done) { Move m = fast_random_move(b); b.apply(m.cells, m.n); }
+        // 全合法手を一度だけ列挙し、取ったマスを含む手をその都度除去する。
+        // fast_random_move より低速だが、全合法手から一様ランダム選択できる。
+        std::vector<Move> moves;
+        gen_moves(b, moves);
+
+        while (!b.done && !moves.empty()) {
+            const Move chosen = moves[rng() % moves.size()];
+            b.apply(chosen.cells, chosen.n);
+
+            // chosen のセルを含む手をすべて除去（取ったマスは使えない）
+            int w = 0;
+            for (int i = 0; i < (int)moves.size(); ++i) {
+                bool ok = true;
+                for (int ci = 0; ci < chosen.n && ok; ++ci)
+                    for (int mi = 0; mi < moves[i].n && ok; ++mi)
+                        if (moves[i].cells[mi] == chosen.cells[ci]) ok = false;
+                if (ok) moves[w++] = moves[i];
+            }
+            moves.resize(w);
+        }
         return b.winner;
     }
 
