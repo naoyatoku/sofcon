@@ -241,20 +241,9 @@ public:
     }
 
     int rollout(Board b) {
-        std::vector<Move> moves;
-        gen_moves(b, moves);
-        while (!b.done && !moves.empty()) {
-            const Move chosen = moves[rng() % moves.size()];
-            b.apply(chosen.cells, chosen.n);
-            int w = 0;
-            for (int i = 0; i < (int)moves.size(); ++i) {
-                bool ok = true;
-                for (int ci = 0; ci < chosen.n && ok; ++ci)
-                    for (int mi = 0; mi < moves[i].n && ok; ++mi)
-                        if (moves[i].cells[mi] == chosen.cells[ci]) ok = false;
-                if (ok) moves[w++] = moves[i];
-            }
-            moves.resize(w);
+        while (!b.done) {
+            Move m = fast_random_move(b);
+            b.apply(m.cells, m.n);
         }
         return b.winner;
     }
