@@ -10,6 +10,14 @@ __pycache__/
 
 # Training logs
 train/log.txt
+train_log.txt
+train_err.txt
+
+# Auto-generated NN weights header (regenerate with export_weights.py)
+cpp/weights.h
+
+# Training checkpoints (large binaries)
+model/checkpoint_16ch_15x15.pt
 
 # Checkpoint backups (keep the live model/checkpoint.pt only)
 *.pt.bak

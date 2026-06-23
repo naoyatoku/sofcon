@@ -58,7 +58,7 @@ def export(checkpoint_path: str, output_path: str):
         lines.append(f"static const int {cname}_shape[{ndim}] = {{{shape_str}}};")
     lines.append("")
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     print(f"Exported {len(var_map)} tensors to {output_path}")
 

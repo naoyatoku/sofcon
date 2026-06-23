@@ -126,8 +126,8 @@ static void softmax(float* x, int n) {
 // ------------------------------------------------------------------ //
 //  Network config (must match training)
 // ------------------------------------------------------------------ //
-static const int CH    = 64;   // trunk channels
-static const int NBLK  = 5;    // ResBlocks
+static const int CH    = 16;   // trunk channels
+static const int NBLK  = 3;    // ResBlocks
 static const float BN_EPS = 1e-5f;
 
 // ------------------------------------------------------------------ //
@@ -136,7 +136,7 @@ static const float BN_EPS = 1e-5f;
 //  policy_out : (H*W,) float  — softmax probabilities
 //  value_out  : scalar float  — win estimate in (-1,1)
 // ------------------------------------------------------------------ //
-struct NetWeights; // forward declaration — defined in weights.h
+struct NetWeights {};  // weights are static globals in weights.h
 
 void forward(const float* board_input, int C_in, int H, int W,
              const NetWeights& wt,

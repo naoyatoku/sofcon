@@ -26,7 +26,7 @@ if not exist entry.h (
 
 echo.
 echo Building prog.dll ...
-%GCC% -O2 -std=c++14 -shared ^
+%GCC% -O3 -std=c++14 -shared ^
     -static-libgcc -static-libstdc++ ^
     -Wl,--whole-archive -lwinpthread -Wl,--no-whole-archive ^
     -o prog.dll prog.cpp

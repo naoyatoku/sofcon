@@ -109,12 +109,15 @@ def run_training(
     device: str = "cpu",
     players_min: int = 2,
     players_max: int = MAX_PLAYERS,
-    board_h: int = 9,
-    board_w: int = 9,
+    board_h: int = 15,
+    board_w: int = 15,
+    channels: int = 16,
+    num_blocks: int = 3,
     save_path: str = "model/checkpoint.pt",
     resume: bool = True,          # デフォルトで再開
 ):
-    net = SofconNet(board_h=board_h, board_w=board_w).to(device)
+    net = SofconNet(board_h=board_h, board_w=board_w,
+                    channels=channels, num_blocks=num_blocks).to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3, weight_decay=1e-4)
     replay_buffer: deque = deque(maxlen=buffer_size)
 
@@ -150,6 +153,7 @@ def run_training(
                         "optimizer": optimizer.state_dict(),
                         "iter": it,
                         "board_h": board_h, "board_w": board_w,
+                        "channels": channels, "num_blocks": num_blocks,
                         "players_min": players_min, "players_max": players_max},
                        save_path)
             print(f"  -> checkpoint saved (iter {it})", flush=True)
@@ -166,9 +170,12 @@ if __name__ == "__main__":
     p.add_argument("--games",       type=int, default=4)
     p.add_argument("--players_min", type=int, default=2)
     p.add_argument("--players_max", type=int, default=MAX_PLAYERS)
-    p.add_argument("--board_h",     type=int, default=9)
-    p.add_argument("--board_w",     type=int, default=9)
+    p.add_argument("--board_h",     type=int, default=15)
+    p.add_argument("--board_w",     type=int, default=15)
+    p.add_argument("--channels",    type=int, default=16)
+    p.add_argument("--blocks",      type=int, default=3)
     p.add_argument("--device",      default="cpu")
+    p.add_argument("--save",        default="model/checkpoint.pt", help="保存先")
     p.add_argument("--no-resume",   action="store_true", help="最初からやり直す")
     args = p.parse_args()
 
@@ -176,4 +183,6 @@ if __name__ == "__main__":
                  num_simulations=args.sims,
                  players_min=args.players_min, players_max=args.players_max,
                  board_h=args.board_h, board_w=args.board_w,
+                 channels=args.channels, num_blocks=args.blocks,
+                 save_path=args.save,
                  device=args.device, resume=not args.no_resume)

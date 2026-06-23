@@ -93,7 +93,7 @@ void forward(const float* board_input, int C_in, int H, int W,
         res, tmp1, tmp2); \
     std::swap(cur, res);
 
-    RES(0) RES(1) RES(2) RES(3) RES(4)
+    RES(0) RES(1) RES(2)
 #undef RES
 
     // ---- Policy head ----
@@ -122,8 +122,9 @@ void forward(const float* board_input, int C_in, int H, int W,
         linear(vh.data(), hw, w_value_fc1_weight, w_value_fc1_bias, vh2.data(), 256);
         relu_inplace(vh2.data(), 256);
         float vscalar;
+        // read only value[0] = current player's win-prob (layout: [MAX_PLAYERS, 256])
         linear(vh2.data(), 256, w_value_fc2_weight, w_value_fc2_bias, &vscalar, 1);
-        value_out = fast_tanh(vscalar);
+        value_out = 1.0f / (1.0f + std::exp(-vscalar));  // sigmoid, matches Python
     }
 }
 

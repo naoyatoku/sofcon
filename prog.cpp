@@ -1,5 +1,14 @@
 // DiscoSoftwareContest
 // prog.cpp  -  MCTS + 終盤厳密解ソルバー + スレッドプール並列化
+//              + NN guided MCTS (PUCT with policy priors)
+
+// NN統合: weights.h が存在する場合のみ有効
+#if __has_include("cpp/weights.h")
+#  include "cpp/weights.h"
+#  include "cpp/inference.h"
+#  include "cpp/inference_impl.h"
+#  define USE_NN 1
+#endif
 
 #include "entry.h"
 #include <windows.h>
@@ -219,12 +228,37 @@ static Move fast_random_move(const Board& b) {
 }
 
 // ----------------------------------------------------------------
+//  NN入力変換（USE_NN時のみ）
+// ----------------------------------------------------------------
+#ifdef USE_NN
+static void board_to_nn_input(const Board& b, float* out) {
+    const int hw = b.H * b.W;
+    std::fill(out, out + 9 * hw, 0.f);
+    for (int r = 0; r < b.H; ++r) {
+        for (int c = 0; c < b.W; ++c) {
+            int idx = r * b.W + c;
+            int8_t cell = b.g[r][c];
+            if (cell == WALL)  out[idx] = 1.f;
+            if (cell == EMPTY) out[hw + idx] = 1.f;
+            for (int k = 0; k < b.num_players && k < 6; ++k) {
+                int pid = (b.current_player - 1 + k) % b.num_players + 1;
+                if (cell == (int8_t)pid) out[(2 + k) * hw + idx] = 1.f;
+            }
+        }
+    }
+    float np_norm = (float)(b.num_players - 1) / 5.f;
+    std::fill(out + 8 * hw, out + 9 * hw, np_norm);
+}
+#endif
+
+// ----------------------------------------------------------------
 //  MCTS（N人対応）
 // ----------------------------------------------------------------
 struct Node {
     Board board; Move move; int parent;
     std::vector<int> children;
     int visit = 0; double value_sum = 0.0; bool expanded = false;
+    float prior = 1.f;  // NN policy prior（未設定時は均一）
 };
 
 class Tree {
@@ -264,13 +298,14 @@ public:
                !nodes[idx].children.empty() &&
                !nodes[idx].board.done) {
             const Node& n = nodes[idx];
-            double logN = std::log((double)n.visit + 1.0);
+            double sqrtN = std::sqrt((double)n.visit + 1.0);
             double best = -1e18;
             int best_c = n.children[0];
             for (int ci : n.children) {
                 const Node& c = nodes[ci];
                 double q = (c.visit > 0) ? (c.value_sum / c.visit) : 0.0;
-                double u = 1.41421356 * std::sqrt(logN / (c.visit + 1.0));
+                // PUCT: prior があれば活用、なければ UCB と同等
+                double u = 1.41421356 * c.prior * sqrtN / (1.0 + c.visit);
                 if (q + u > best) { best = q + u; best_c = ci; }
             }
             idx = best_c;
@@ -288,6 +323,23 @@ public:
         }
     }
 
+    // NN value を使った backprop（float win-prob、多人数対応）
+    void backprop_float(int idx, float cur_player_value) {
+        int leaf_player = nodes[idx].board.current_player;
+        int n = nodes[idx].board.num_players;
+        float opp_value = (n > 1) ? (1.f - cur_player_value) / (n - 1) : 0.f;
+        while (idx != -1) {
+            nodes[idx].visit++;
+            int par = nodes[idx].parent;
+            if (par != -1) {
+                int mover = nodes[par].board.current_player;
+                int k = (mover - leaf_player + n) % n;
+                nodes[idx].value_sum += (k == 0) ? cur_player_value : opp_value;
+            }
+            idx = par;
+        }
+    }
+
     Move best_child(int root) {
         int best = nodes[root].children[0], best_v = -1;
         for (int ci : nodes[root].children)
@@ -301,6 +353,31 @@ public:
         int root = alloc(root_board, Move{{0, 0, 0}, 0}, -1);
         expand(root);
         if (nodes[root].children.empty()) return Move{{0, 0, 0}, 0};
+
+#ifdef USE_NN
+        // NN を1回呼んでrootの子ノードにpolicy priorを設定
+        {
+            static float nn_input[9 * MAXN * MAXN];
+            static float nn_policy[MAXN * MAXN];
+            float nn_value_out = 0.f;
+            board_to_nn_input(root_board, nn_input);
+            sofcon_nn::NetWeights wt{};
+            sofcon_nn::forward(nn_input, 9, root_board.H, root_board.W,
+                               wt, nn_policy, nn_value_out);
+            // 各子ノードのanchorセルのpolicyをpriorに設定
+            float prior_sum = 0.f;
+            for (int ci : nodes[root].children) {
+                int anchor = nodes[ci].move.cells[0];
+                nodes[ci].prior = std::max(nn_policy[anchor], 1e-4f);
+                prior_sum += nodes[ci].prior;
+            }
+            // 正規化
+            if (prior_sum > 0.f)
+                for (int ci : nodes[root].children)
+                    nodes[ci].prior /= prior_sum;
+        }
+#endif
+
         int sims = 0;
         while (true) {
             if ((sims & 7) == 0) {
