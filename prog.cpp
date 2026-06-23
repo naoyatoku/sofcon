@@ -447,21 +447,25 @@ public:
         uint32_t full = (k == 32) ? 0xffffffffu : ((1u << k) - 1u);
         EndgameResult res;
         float best_prob = -1.f;
+        bool timed_out = false;
         for (uint32_t mv : moveMasks_) {
             if ((mv & full) != mv) continue;
             uint32_t nm = full & ~mv;
             float prob = (nm == 0) ? 1.f : rec(nm, 1 % n_);
-            if (prob < 0.f) break;  // タイムアウト
+            if (prob < 0.f) { timed_out = true; break; }  // タイムアウト
             if (prob > best_prob) {
                 best_prob = prob;
                 res.move = decode(mv);
                 if (best_prob == 1.f) break;  // 必勝確定
             }
         }
-        if (best_prob < 0.f) return {};  // タイムアウト（手なし）
+        // 1手も評価できなかった場合のみ諦める
+        if (best_prob < 0.f) return {};
         res.solved   = true;
         res.win_prob = best_prob;
-        res.win      = (best_prob > 0.f);  // 勝ち目があれば採用
+        // 部分評価でも MCTSより良い情報なので常に採用
+        // （タイムアウトした場合は不完全だが、それでも MCTS よりまし）
+        res.win = true;
         return res;
     }
 
@@ -704,11 +708,12 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
     mcts::Move m;
     bool decided = false;
 
-    // 3. 終盤厳密解：空き≤ENDGAME_MAX_EMPTY なら完全探索で勝ちを強制
+    // 3. 終盤Expectimax：空き≤ENDGAME_MAX_EMPTY なら確率的最善手を使う
+    //    完全探索でなくても部分評価の最善手はMCTSより良い
     if (b.empty_count <= mcts::ENDGAME_MAX_EMPTY) {
         mcts::Endgame eg;
         mcts::EndgameResult er = eg.solve(b, my_id, mcts::ENDGAME_NODE_CAP);
-        if (er.solved && er.win) { m = er.move; decided = true; }
+        if (er.solved) { m = er.move; decided = true; }
     }
 
     // 4. MCTS（スレッドプール並列）
