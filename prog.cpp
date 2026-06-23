@@ -228,6 +228,124 @@ static Move fast_random_move(const Board& b) {
 }
 
 // ----------------------------------------------------------------
+//  決定論的対戦相手シミュレーション
+//  Player 2: 左上から縦方向に 1 マス
+//  Player 3: 右下から横方向に 1 マス
+//  Player 4: 横方向で最大連結グループ（左上優先）
+//  Player 5: 縦方向で最大連結グループ（左上優先）
+// ----------------------------------------------------------------
+static void bot_p2(Board& b) {
+    for (int c = 0; c < b.W; ++c)
+        for (int r = 0; r < b.H; ++r)
+            if (b.g[r][c] == EMPTY) {
+                int cell = r * b.W + c;
+                b.apply(&cell, 1); return;
+            }
+}
+
+static void bot_p3(Board& b) {
+    for (int r = b.H - 1; r >= 0; --r)
+        for (int c = b.W - 1; c >= 0; --c)
+            if (b.g[r][c] == EMPTY) {
+                int cell = r * b.W + c;
+                b.apply(&cell, 1); return;
+            }
+}
+
+static void bot_p4(Board& b) {
+    int k = b.number_takes, best = 0, br = 0, bc = 0;
+    for (int r = 0; r < b.H; ++r) {
+        int run = 0, sc = 0;
+        for (int c = 0; c <= b.W; ++c) {
+            if (c < b.W && b.g[r][c] == EMPTY) { if (!run) sc = c; ++run; }
+            else if (run) {
+                if (std::min(run, k) > best) { best = std::min(run, k); br = r; bc = sc; }
+                run = 0;
+            }
+        }
+    }
+    if (best > 0) {
+        int cells[10];
+        for (int i = 0; i < best; ++i) cells[i] = br * b.W + bc + i;
+        b.apply(cells, best);
+    }
+}
+
+static void bot_p5(Board& b) {
+    int k = b.number_takes, best = 0, br = 0, bc = 0;
+    for (int c = 0; c < b.W; ++c) {  // 列優先で左上を選ぶ
+        int run = 0, sr = 0;
+        for (int r = 0; r <= b.H; ++r) {
+            if (r < b.H && b.g[r][c] == EMPTY) { if (!run) sr = r; ++run; }
+            else if (run) {
+                if (std::min(run, k) > best) { best = std::min(run, k); br = sr; bc = c; }
+                run = 0;
+            }
+        }
+    }
+    if (best > 0) {
+        int cells[10];
+        for (int i = 0; i < best; ++i) cells[i] = (br + i) * b.W + bc;
+        b.apply(cells, best);
+    }
+}
+
+static void apply_bot(Board& b) {
+    switch (b.current_player) {
+        case 2: bot_p2(b); break;
+        case 3: bot_p3(b); break;
+        case 4: bot_p4(b); break;
+        case 5: bot_p5(b); break;
+        default: { Move m = fast_random_move(b); b.apply(m.cells, m.n); }
+    }
+}
+
+// 自分の次の番まで bot を確定的にシミュレーション
+static void sim_bots(Board& b) {
+    while (!b.done && b.current_player != 1) apply_bot(b);
+}
+
+// 各候補手について 1 ラウンド先読みし最善手を返す
+// スコア: 100=即勝ち, 10=勝利パリティ, -100=即負け, -10=敗北パリティ
+static Move det_lookahead(const Board& b) {
+    std::vector<Move> moves;
+    gen_moves(b, moves);
+    if (moves.empty()) return Move{{0,0,0}, 0};
+
+    Move best = moves[0]; int best_sc = INT_MIN;
+    int round_size = b.number_takes * b.num_players;
+
+    for (const Move& mv : moves) {
+        Board sim = b;
+        sim.apply(mv.cells, mv.n);
+        sim_bots(sim);
+
+        int sc;
+        if (sim.done) {
+            sc = (sim.winner == 1) ? 100 : -100;
+        } else {
+            int rem = (round_size > 0) ? sim.empty_count % round_size : 0;
+            sc = (rem >= 1 && rem <= sim.number_takes) ? 10 : -10;
+        }
+        if (sc > best_sc) { best_sc = sc; best = mv; }
+        if (best_sc == 100) break;
+    }
+    return best;
+}
+
+// 確定的ロールアウト: 自分はランダム、相手は bot 確定
+static int det_rollout(Board b) {
+    while (!b.done) {
+        if (b.current_player == 1) {
+            Move m = fast_random_move(b); b.apply(m.cells, m.n);
+        } else {
+            apply_bot(b);
+        }
+    }
+    return b.winner;
+}
+
+// ----------------------------------------------------------------
 //  パリティ評価
 //    全員が number_takes マスずつ取ると仮定したとき、
 //    現在のプレイヤーが最後のマスを取れるかを判定する。
@@ -405,9 +523,10 @@ public:
                 winner = nodes[leaf].board.winner;
             } else {
                 if (!nodes[leaf].expanded) expand(leaf);
-                // パリティで評価できればロールアウト不要
+                // パリティで評価できればロールアウト不要、
+                // それ以外は確定的ロールアウト（bot の行動を再現）
                 winner = parity_winner(nodes[leaf].board);
-                if (winner == 0) winner = rollout(nodes[leaf].board);
+                if (winner == 0) winner = det_rollout(nodes[leaf].board);
             }
             backprop(leaf, winner);
             ++sims;
@@ -725,7 +844,14 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
     mcts::Move m;
     bool decided = false;
 
-    // 3a. パリティ直接手：勝利パリティなら最適マス数の手を即選択
+    // 3a. 確定的先読み（AI戦: P2〜P5 の行動が既知）
+    //     1 ラウンド先読みして即勝ち or 勝利パリティになる手を選ぶ
+    if (!decided) {
+        mcts::Move dm = mcts::det_lookahead(b);
+        if (dm.n > 0) { m = dm; decided = true; }
+    }
+
+    // 3b. パリティ直接手：勝利パリティなら最適マス数の手を即選択
     //     仮定: 全員が number_takes マスずつ取る
     //     条件: empty % (number_takes * num_players) == number_takes
     if (!decided && number_takes > 0) {
