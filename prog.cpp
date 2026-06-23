@@ -19,6 +19,7 @@
 #include <random>
 #include <chrono>
 #include <unordered_map>
+#include <unordered_set>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -145,52 +146,53 @@ static thread_local std::mt19937 rng{
 };
 
 // ----------------------------------------------------------------
-//  合法手生成（展開フェーズ用）
+//  合法手生成（number_takes まで対応）
+//  DFS で連結サブセットを列挙。anchor（最小インデックス）が正準形。
 // ----------------------------------------------------------------
-static void gen_moves(const Board& b, std::vector<Move>& out) {
-    out.clear();
-    int H = b.H, W = b.W;
-    for (int r = 0; r < H; ++r) {
-        for (int c = 0; c < W; ++c) {
-            if (b.g[r][c] != EMPTY) continue;
-            int a = r * W + c;
-            out.push_back({{a, 0, 0}, 1});
-            for (int d = 0; d < 4; ++d) {
-                int r2 = r + DR[d], c2 = c + DC[d];
-                if (r2 < 0 || r2 >= H || c2 < 0 || c2 >= W) continue;
-                if (b.g[r2][c2] != EMPTY) continue;
-                int bb = r2 * W + c2;
-                if (bb < a) continue;
-                out.push_back({{a, bb, 0}, 2});
-                for (int src = 0; src < 2; ++src) {
-                    int rr = (src == 0 ? r : r2), cc = (src == 0 ? c : c2);
-                    for (int e = 0; e < 4; ++e) {
-                        int r3 = rr + DR[e], c3 = cc + DC[e];
-                        if (r3 < 0 || r3 >= H || c3 < 0 || c3 >= W) continue;
-                        if (b.g[r3][c3] != EMPTY) continue;
-                        int cc3 = r3 * W + c3;
-                        if (cc3 == a || cc3 == bb || cc3 < a) continue;
-                        int s0 = a, s1 = bb, s2 = cc3;
-                        if (s1 > s2) std::swap(s1, s2);
-                        if (s0 > s1) std::swap(s0, s1);
-                        if (s1 > s2) std::swap(s1, s2);
-                        out.push_back({{s0, s1, s2}, 3});
-                    }
-                }
-            }
+static void gen_moves_dfs(const Board& b, Move& cur, int anchor,
+                          std::vector<Move>& out, int max_n) {
+    out.push_back(cur);
+    if (cur.n >= max_n) return;
+    for (int si = 0; si < cur.n; ++si) {
+        int r0 = cur.cells[si] / b.W, c0 = cur.cells[si] % b.W;
+        for (int d = 0; d < 4; ++d) {
+            int r2 = r0 + DR[d], c2 = c0 + DC[d];
+            if (r2<0||r2>=b.H||c2<0||c2>=b.W) continue;
+            if (b.g[r2][c2] != EMPTY) continue;
+            int nb = r2*b.W+c2;
+            if (nb <= anchor) continue;  // anchor が最小になる正準形
+            bool dup = false;
+            for (int i=0; i<cur.n; ++i) if (cur.cells[i]==nb) {dup=true; break;}
+            if (dup) continue;
+            cur.cells[cur.n++] = nb;
+            gen_moves_dfs(b, cur, anchor, out, max_n);
+            cur.n--;
         }
     }
-    std::sort(out.begin(), out.end(), [](const Move& x, const Move& y) {
-        if (x.n != y.n) return x.n < y.n;
-        if (x.cells[0] != y.cells[0]) return x.cells[0] < y.cells[0];
-        if (x.cells[1] != y.cells[1]) return x.cells[1] < y.cells[1];
-        return x.cells[2] < y.cells[2];
+}
+
+static void gen_moves(const Board& b, std::vector<Move>& out) {
+    out.clear();
+    int k = (b.number_takes > 0) ? std::min(b.number_takes, 10) : 3;
+    for (int r = 0; r < b.H; ++r)
+        for (int c = 0; c < b.W; ++c) {
+            if (b.g[r][c] != EMPTY) continue;
+            Move m{}; m.n=1; m.cells[0]=r*b.W+c;
+            gen_moves_dfs(b, m, m.cells[0], out, k);
+        }
+    // 各手のセルをソートして正準化
+    for (Move& m : out)
+        std::sort(m.cells, m.cells+m.n);
+    // 重複除去
+    std::sort(out.begin(), out.end(), [](const Move& a, const Move& b){
+        if (a.n!=b.n) return a.n<b.n;
+        for (int i=0;i<a.n;i++) if (a.cells[i]!=b.cells[i]) return a.cells[i]<b.cells[i];
+        return false;
     });
-    out.erase(std::unique(out.begin(), out.end(), [](const Move& x, const Move& y) {
-        return x.n == y.n &&
-               x.cells[0] == y.cells[0] &&
-               x.cells[1] == y.cells[1] &&
-               x.cells[2] == y.cells[2];
+    out.erase(std::unique(out.begin(), out.end(), [](const Move& a, const Move& b){
+        if (a.n!=b.n) return false;
+        for (int i=0;i<a.n;i++) if (a.cells[i]!=b.cells[i]) return false;
+        return true;
     }), out.end());
 }
 
@@ -604,7 +606,7 @@ public:
                 if (idx_of[fi] >= 0) adj_[i].push_back(idx_of[fi]);
             }
         }
-        buildMoves(k);
+        buildMoves(k, std::min(b.number_takes > 0 ? b.number_takes : 3, 10));
 
         uint32_t full = (k == 32) ? 0xffffffffu : ((1u << k) - 1u);
         EndgameResult res;
@@ -637,33 +639,32 @@ private:
     std::vector<int> cells_; std::vector<std::vector<int>> adj_;
     std::vector<uint32_t> moveMasks_; std::unordered_map<uint64_t, float> memo_;
 
-    void buildMoves(int k) {
-        moveMasks_.clear(); std::vector<uint32_t> tmp;
-        for (int i = 0; i < k; ++i) {
-            tmp.push_back(1u << i);
+    // DFS で連結サブセットのビットマスクを列挙
+    void buildMoves_dfs(uint32_t mask, int n_empty, int n_takes,
+                        std::unordered_set<uint32_t>& seen) {
+        if (!seen.insert(mask).second) return;  // 重複スキップ
+        moveMasks_.push_back(mask);
+        if (__builtin_popcount(mask) >= n_takes) return;
+        for (int i = 0; i < n_empty; ++i) {
+            if (!(mask & (1u << i))) continue;
             for (int j : adj_[i]) {
-                if (j < i) continue;
-                tmp.push_back((1u << i) | (1u << j));
+                if (!(mask & (1u << j)))
+                    buildMoves_dfs(mask | (1u << j), n_empty, n_takes, seen);
             }
         }
+    }
+
+    void buildMoves(int k, int n_takes) {
+        moveMasks_.clear();
+        std::unordered_set<uint32_t> seen;
         for (int i = 0; i < k; ++i)
-            for (int j : adj_[i]) {
-                if (j < i) continue;
-                uint32_t base = (1u << i) | (1u << j);
-                for (int src : {i, j})
-                    for (int e : adj_[src]) {
-                        if (e == i || e == j) continue;
-                        tmp.push_back(base | (1u << e));
-                    }
-            }
-        std::sort(tmp.begin(), tmp.end());
-        tmp.erase(std::unique(tmp.begin(), tmp.end()), tmp.end());
-        moveMasks_.swap(tmp);
+            buildMoves_dfs(1u << i, k, n_takes, seen);
+        std::sort(moveMasks_.begin(), moveMasks_.end());
     }
 
     Move decode(uint32_t mv) {
         Move m; m.n = 0;
-        for (int i = 0; i < (int)cells_.size() && m.n < 3; ++i)
+        for (int i = 0; i < (int)cells_.size() && m.n < 10; ++i)
             if (mv & (1u << i)) m.cells[m.n++] = cells_[i];
         return m;
     }
