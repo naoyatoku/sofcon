@@ -133,7 +133,7 @@ struct Board {
     }
 };
 
-struct Move { int cells[3]; int n; };
+struct Move { int cells[10]; int n; };  // 最大 LANDS_SHARK_MAX(10) マス
 
 static const int DR[4] = {-1,  1,  0, 0};
 static const int DC[4] = { 0,  0, -1, 1};
@@ -195,6 +195,30 @@ static void gen_moves(const Board& b, std::vector<Move>& out) {
 }
 
 // ----------------------------------------------------------------
+//  選んだ手を number_takes まで貪欲に拡張する
+// ----------------------------------------------------------------
+static Move extend_move(const Board& b, Move m, int max_n) {
+    max_n = std::min(max_n, 10);
+    while (m.n < max_n) {
+        bool extended = false;
+        for (int si = 0; si < m.n && !extended; ++si) {
+            int r0 = m.cells[si] / b.W, c0 = m.cells[si] % b.W;
+            for (int d = 0; d < 4 && !extended; ++d) {
+                int r2 = r0 + DR[d], c2 = c0 + DC[d];
+                if (r2 < 0 || r2 >= b.H || c2 < 0 || c2 >= b.W) continue;
+                if (b.g[r2][c2] != EMPTY) continue;
+                int nb = r2 * b.W + c2;
+                bool dup = false;
+                for (int i = 0; i < m.n; ++i) if (m.cells[i] == nb) { dup = true; break; }
+                if (!dup) { m.cells[m.n++] = nb; extended = true; }
+            }
+        }
+        if (!extended) break;
+    }
+    return m;
+}
+
+// ----------------------------------------------------------------
 //  高速ランダム手（ロールアウト専用）
 // ----------------------------------------------------------------
 static Move fast_random_move(const Board& b) {
@@ -205,7 +229,8 @@ static Move fast_random_move(const Board& b) {
 
     Move m; m.cells[0] = empties[rng() % ne]; m.n = 1;
 
-    for (int ext = 0; ext < 2; ++ext) {
+    int target = (b.number_takes > 0) ? std::min(b.number_takes, 10) : 3;
+    for (int ext = 0; ext < target - 1; ++ext) {
         if (rng() & 1) break;
         int src  = m.cells[rng() % m.n];
         int r0 = src / b.W, c0 = src % b.W;
@@ -922,11 +947,15 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
         m = pool::search(b, budget);
     }
 
-    // 5. 結果を出力引数に書き戻す
+    // 5. 選んだ手を number_takes まで拡張（重要: k>3 のステージで全枠を使い切る）
+    if (m.n < number_takes)
+        m = mcts::extend_move(b, m, number_takes);
+
+    // 6. 結果を出力引数に書き戻す
     *count = (char)m.n;
     for (int i = 0; i < m.n; ++i) {
-        lands[i].y = m.cells[i] / W;   // row（floor の第1添字）
-        lands[i].x = m.cells[i] % W;   // col（floor の第2添字）
+        lands[i].y = m.cells[i] / W;
+        lands[i].x = m.cells[i] % W;
     }
 }
 
