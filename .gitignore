@@ -13,8 +13,9 @@ train/log.txt
 train_log.txt
 train_err.txt
 
-# Auto-generated NN weights header (regenerate with export_weights.py)
+# Auto-generated files (regenerate with tools/bundle.py or export_weights.py)
 cpp/weights.h
+prog_submit.cpp
 
 # Training checkpoints (large binaries)
 model/checkpoint_16ch_15x15.pt
