@@ -794,15 +794,49 @@ static mcts::Move search(const mcts::Board& board, double budget_ms) {
 } // namespace pool
 
 // ============================================================
+//  対戦モード検出
+//    P2・P3 は AI 戦では必ず 1 マスしか取らない。
+//    前ターンとの差分を見て 2 マス以上取っていれば対人戦と判定。
+// ============================================================
+namespace mode {
+    static bool have_prev     = false;
+    static bool is_human      = false;  // true = 対人戦
+    static char prev[STAGE_Y_MAX][STAGE_X_MAX];
+
+    static void reset() {
+        have_prev = false;
+        is_human  = false;
+    }
+
+    static void update(const char floor[][STAGE_X_MAX], int H, int W) {
+        if (!is_human && have_prev) {
+            int p2 = 0, p3 = 0;
+            for (int r = 0; r < H; ++r)
+                for (int c = 0; c < W; ++c) {
+                    int cur = (signed char)floor[r][c];
+                    int prv = (signed char)prev[r][c];
+                    if (cur == 2 && prv != 2) ++p2;
+                    if (cur == 3 && prv != 3) ++p3;
+                }
+            // AI戦の P2・P3 は 1 マス固定 → 2 マス以上なら対人戦
+            if (p2 > 1 || p3 > 1) is_human = true;
+        }
+        for (int r = 0; r < H; ++r)
+            for (int c = 0; c < W; ++c)
+                prev[r][c] = floor[r][c];
+        have_prev = true;
+    }
+} // namespace mode
+
+// ============================================================
 //  DLL エクスポート関数
 // ============================================================
 
 // 各ステージの開始時に呼ばれる
-//   - 初回のみスレッドプールを起動
-//   - ステージカウンタを進める（時間配分の精度向上）
 extern "C" __declspec(dllexport) void StartStage() {
     pool::init_once();
     mcts::on_stage_start();
+    mode::reset();  // ステージ開始時に対戦モード検出をリセット
 }
 
 // 各ステージの終了時に呼ばれる
@@ -828,7 +862,9 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
     if (H == 0) H = (STAGE_Y_MAX < mcts::MAXN) ? STAGE_Y_MAX : mcts::MAXN;
     if (W == 0) W = (STAGE_X_MAX < mcts::MAXN) ? STAGE_X_MAX : mcts::MAXN;
 
-    // 2. char floor[y][x] → int board[row][col] 変換
+    // 2. 対戦モード検出 & char floor → int board 変換
+    mode::update(floor, H, W);
+
     int board[mcts::MAXN][mcts::MAXN] = {};
     for (int r = 0; r < H; ++r)
         for (int c = 0; c < W; ++c)
@@ -844,9 +880,9 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
     mcts::Move m;
     bool decided = false;
 
-    // 3a. 確定的先読み（AI戦: P2〜P5 の行動が既知）
-    //     1 ラウンド先読みして即勝ち or 勝利パリティになる手を選ぶ
-    if (!decided) {
+    // 3a. 確定的先読み（AI戦のみ: P2〜P5 の行動が既知）
+    //     対人戦が検出された場合はスキップして MCTS を使う
+    if (!decided && !mode::is_human) {
         mcts::Move dm = mcts::det_lookahead(b);
         if (dm.n > 0) { m = dm; decided = true; }
     }
