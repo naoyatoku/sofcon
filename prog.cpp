@@ -305,35 +305,65 @@ static void sim_bots(Board& b) {
     while (!b.done && b.current_player != 1) apply_bot(b);
 }
 
-// 各候補手について 1 ラウンド先読みし最善手を返す
-// スコア≥10（勝利パリティ or 即勝ち）の手があればそれを返す
-// 見つからない場合は n=0 を返す（MCTS に任せる）
-static Move det_lookahead(const Board& b) {
+// 確定的深さ優先探索で勝てる手順を探す
+// 相手は決定論的 → 枝分かれは自分の手だけ
+// 勝てる最初の手を返す。見つからなければ n=0
+static bool dfs_win(Board b, Move& result,
+                    std::chrono::steady_clock::time_point deadline) {
+    // ボットを全員動かして自分の番まで進める
+    sim_bots(b);
+    if (b.done) return (b.winner == 1);
+
+    // 時間切れチェック
+    if (std::chrono::steady_clock::now() > deadline) return false;
+
     std::vector<Move> moves;
     gen_moves(b, moves);
-    if (moves.empty()) return Move{{0,0,0}, 0};
+    if (moves.empty()) return false;
 
-    Move best{}; int best_sc = INT_MIN;
+    // パリティスコアを先に計算してソート（良い手から試して探索を高速化）
     int round_size = b.number_takes * b.num_players;
+    std::vector<int> scores(moves.size());
+    for (int i = 0; i < (int)moves.size(); ++i) {
+        Board sim = b; sim.apply(moves[i].cells, moves[i].n); sim_bots(sim);
+        if (sim.done) scores[i] = (sim.winner == 1) ? 2 : -2;
+        else {
+            int rem = (round_size > 0) ? sim.empty_count % round_size : 0;
+            scores[i] = (rem >= 1 && rem <= sim.number_takes) ? 1 : 0;
+        }
+    }
+    // スコア降順でインデックスをソート
+    std::vector<int> order(moves.size());
+    for (int i = 0; i < (int)order.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(),
+              [&](int a, int b_idx) { return scores[a] > scores[b_idx]; });
 
-    for (const Move& mv : moves) {
+    for (int idx : order) {
+        if (std::chrono::steady_clock::now() > deadline) break;
+        const Move& mv = moves[idx];
+
         Board sim = b;
         sim.apply(mv.cells, mv.n);
         sim_bots(sim);
 
-        int sc;
+        bool win;
         if (sim.done) {
-            sc = (sim.winner == 1) ? 100 : -100;
+            win = (sim.winner == 1);
         } else {
-            int rem = (round_size > 0) ? sim.empty_count % round_size : 0;
-            sc = (rem >= 1 && rem <= sim.number_takes) ? 10 : -10;
+            Move dummy{{0,0,0},0};
+            win = dfs_win(sim, dummy, deadline);
         }
-        if (sc > best_sc) { best_sc = sc; best = mv; }
-        if (best_sc == 100) break;
+        if (win) { result = mv; return true; }
     }
-    // 勝利パリティ以上の手がなければ MCTS に任せる
-    if (best_sc < 10) return Move{{0,0,0}, 0};
-    return best;
+    return false;
+}
+
+static Move det_lookahead(const Board& b, double budget_ms) {
+    auto deadline = std::chrono::steady_clock::now()
+                  + std::chrono::milliseconds((long long)budget_ms);
+    Move result{{0,0,0}, 0};
+    dfs_win(b, result, deadline);
+    return result;
 }
 
 // 確定的ロールアウト: 自分はランダム、相手は bot 確定
@@ -909,11 +939,12 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
         }
     }
 
-    // 3. 確定的先読み（AI戦のみ）
-    //    スコア≥10（勝利パリティ or 即勝ち）の手があれば採用
-    //    スコア<0 の場合は MCTS に任せる
+    // 3. 確定的深さ優先探索（AI戦のみ）
+    //    相手が決定論的 → 自分の手だけ枝分かれ → 勝ち手順を探索
+    //    時間予算の半分を使い、見つかれば採用
     if (!decided && !mode::is_human) {
-        mcts::Move dm = mcts::det_lookahead(b);
+        double budget = mcts::budget_per_move(b.empty_count, num_players);
+        mcts::Move dm = mcts::det_lookahead(b, budget * 0.8);
         if (dm.n > 0) { m = dm; decided = true; }
     }
 
