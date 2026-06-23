@@ -401,11 +401,16 @@ public:
 };
 
 // ----------------------------------------------------------------
-//  終盤厳密解ソルバー（パラノイド完全探索）
-//    空きマス≤ENDGAME_MAX_EMPTY のとき完全探索で必勝手を確定する。
-//    パラノイド仮定：自分以外の全員が自分の勝ちを阻止しようとする。
+//  終盤厳密解ソルバー（Expectimax完全探索）
+//    自分の番: 最も勝率が高い手を選ぶ
+//    敵の番:   全合法手の平均勝率を返す（ランダムプレイ仮定）
+//    → 5人戦でも「最も勝ちやすい手」を正しく評価できる
 // ----------------------------------------------------------------
-struct EndgameResult { bool solved = false, win = false; Move move{}; };
+struct EndgameResult {
+    bool solved = false, win = false;
+    float win_prob = 0.f;
+    Move move{};
+};
 
 class Endgame {
 public:
@@ -441,21 +446,30 @@ public:
 
         uint32_t full = (k == 32) ? 0xffffffffu : ((1u << k) - 1u);
         EndgameResult res;
+        float best_prob = -1.f;
         for (uint32_t mv : moveMasks_) {
             if ((mv & full) != mv) continue;
-            uint32_t nm = full & ~mv; bool win;
-            if (nm == 0) win = true;
-            else { int r = rec(nm, 1 % n_); if (r < 0) return {}; win = (r == 1); }
-            if (win) { res.solved = true; res.win = true; res.move = decode(mv); return res; }
+            uint32_t nm = full & ~mv;
+            float prob = (nm == 0) ? 1.f : rec(nm, 1 % n_);
+            if (prob < 0.f) break;  // タイムアウト
+            if (prob > best_prob) {
+                best_prob = prob;
+                res.move = decode(mv);
+                if (best_prob == 1.f) break;  // 必勝確定
+            }
         }
-        res.solved = true; res.win = false; return res;
+        if (best_prob < 0.f) return {};  // タイムアウト（手なし）
+        res.solved   = true;
+        res.win_prob = best_prob;
+        res.win      = (best_prob > 0.f);  // 勝ち目があれば採用
+        return res;
     }
 
 private:
     int n_, me_, W_; long node_cap_, nodes_;
     std::chrono::steady_clock::time_point start_; double max_ms_;
     std::vector<int> cells_; std::vector<std::vector<int>> adj_;
-    std::vector<uint32_t> moveMasks_; std::unordered_map<uint64_t, char> memo_;
+    std::vector<uint32_t> moveMasks_; std::unordered_map<uint64_t, float> memo_;
 
     void buildMoves(int k) {
         moveMasks_.clear(); std::vector<uint32_t> tmp;
@@ -488,29 +502,40 @@ private:
         return m;
     }
 
-    int rec(uint32_t mask, int off) {
-        if (++nodes_ > node_cap_) return -1;
+    // Expectimax: 自分の番は最大化、敵の番は平均（ランダム仮定）
+    // 戻り値: 自分の勝率 0.0〜1.0、タイムアウト時は -1.f
+    float rec(uint32_t mask, int off) {
+        if (++nodes_ > node_cap_) return -1.f;
         if ((nodes_ & 0xffff) == 0) {
             double el = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - start_).count();
-            if (el > max_ms_) return -1;
+            if (el > max_ms_) return -1.f;
         }
         uint64_t key = ((uint64_t)mask << 6) | (uint32_t)off;
         auto it = memo_.find(key);
         if (it != memo_.end()) return it->second;
 
         bool my_turn = (off == 0);
-        int result = my_turn ? 0 : 1; bool decided = false;
+        float result = my_turn ? 0.f : 0.f;
+        float sum = 0.f; int cnt = 0;
+
         for (uint32_t mv : moveMasks_) {
             if ((mv & mask) != mv) continue;
-            uint32_t nm = mask & ~mv; int child;
-            if (nm == 0) child = my_turn ? 1 : 0;
-            else { int r = rec(nm, (off + 1) % n_); if (r < 0) return -1; child = r; }
-            if (my_turn) { if (child == 1) { result = 1; decided = true; break; } }
-            else         { if (child == 0) { result = 0; decided = true; break; } }
+            uint32_t nm = mask & ~mv;
+            float child = (nm == 0) ? (my_turn ? 1.f : 0.f)
+                                    : rec(nm, (off + 1) % n_);
+            if (child < 0.f) return -1.f;  // タイムアウト伝播
+
+            if (my_turn) {
+                if (child > result) result = child;
+                if (result == 1.f) break;  // 必勝確定、枝刈り
+            } else {
+                sum += child; ++cnt;        // 敵は平均を取る
+            }
         }
-        (void)decided;
-        memo_[key] = (char)result;
+        if (!my_turn) result = (cnt > 0) ? sum / cnt : 0.f;
+
+        memo_[key] = result;
         return result;
     }
 };
