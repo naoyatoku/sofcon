@@ -310,50 +310,44 @@ static void sim_bots(Board& b) {
 // 勝てる最初の手を返す。見つからなければ n=0
 static bool dfs_win(Board b, Move& result,
                     std::chrono::steady_clock::time_point deadline) {
-    // ボットを全員動かして自分の番まで進める
     sim_bots(b);
     if (b.done) return (b.winner == 1);
-
-    // 時間切れチェック
     if (std::chrono::steady_clock::now() > deadline) return false;
 
     std::vector<Move> moves;
     gen_moves(b, moves);
     if (moves.empty()) return false;
 
-    // パリティスコアを先に計算してソート（良い手から試して探索を高速化）
     int round_size = b.number_takes * b.num_players;
-    std::vector<int> scores(moves.size());
-    for (int i = 0; i < (int)moves.size(); ++i) {
-        Board sim = b; sim.apply(moves[i].cells, moves[i].n); sim_bots(sim);
-        if (sim.done) scores[i] = (sim.winner == 1) ? 2 : -2;
-        else {
-            int rem = (round_size > 0) ? sim.empty_count % round_size : 0;
-            scores[i] = (rem >= 1 && rem <= sim.number_takes) ? 1 : 0;
-        }
-    }
-    // スコア降順でインデックスをソート
-    std::vector<int> order(moves.size());
-    for (int i = 0; i < (int)order.size(); ++i) order[i] = i;
-    std::sort(order.begin(), order.end(),
-              [&](int a, int b_idx) { return scores[a] > scores[b_idx]; });
 
-    for (int idx : order) {
-        if (std::chrono::steady_clock::now() > deadline) break;
-        const Move& mv = moves[idx];
-
+    // 第1パス: 即勝ち & 勝利パリティ（sim_botsは1回のみ）
+    for (const Move& mv : moves) {
+        if (std::chrono::steady_clock::now() > deadline) return false;
         Board sim = b;
         sim.apply(mv.cells, mv.n);
         sim_bots(sim);
-
-        bool win;
         if (sim.done) {
-            win = (sim.winner == 1);
-        } else {
-            Move dummy{{0,0,0},0};
-            win = dfs_win(sim, dummy, deadline);
+            if (sim.winner == 1) { result = mv; return true; }
+            continue;
         }
-        if (win) { result = mv; return true; }
+        int rem = (round_size > 0) ? sim.empty_count % round_size : 0;
+        bool good = (rem >= 1 && rem <= sim.number_takes);
+        if (!good) continue;
+        Move dummy{{0,0,0},0};
+        if (dfs_win(sim, dummy, deadline)) { result = mv; return true; }
+    }
+
+    // 第2パス: その他の手
+    for (const Move& mv : moves) {
+        if (std::chrono::steady_clock::now() > deadline) return false;
+        Board sim = b;
+        sim.apply(mv.cells, mv.n);
+        sim_bots(sim);
+        if (sim.done) continue;
+        int rem = (round_size > 0) ? sim.empty_count % round_size : 0;
+        if (rem >= 1 && rem <= sim.number_takes) continue; // 第1パスで処理済み
+        Move dummy{{0,0,0},0};
+        if (dfs_win(sim, dummy, deadline)) { result = mv; return true; }
     }
     return false;
 }
@@ -615,12 +609,12 @@ public:
         uint32_t full = (k == 32) ? 0xffffffffu : ((1u << k) - 1u);
         EndgameResult res;
         float best_prob = -1.f;
-        bool timed_out = false;
+
         for (uint32_t mv : moveMasks_) {
             if ((mv & full) != mv) continue;
             uint32_t nm = full & ~mv;
             float prob = (nm == 0) ? 1.f : rec(nm, 1 % n_);
-            if (prob < 0.f) { timed_out = true; break; }  // タイムアウト
+            if (prob < 0.f) break;  // タイムアウト
             if (prob > best_prob) {
                 best_prob = prob;
                 res.move = decode(mv);
@@ -944,7 +938,7 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
     //    時間予算の半分を使い、見つかれば採用
     if (!decided && !mode::is_human) {
         double budget = mcts::budget_per_move(b.empty_count, num_players);
-        mcts::Move dm = mcts::det_lookahead(b, budget * 0.8);
+        mcts::Move dm = mcts::det_lookahead(b, budget * 0.3);
         if (dm.n > 0) { m = dm; decided = true; }
     }
 
