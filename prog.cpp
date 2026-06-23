@@ -306,13 +306,14 @@ static void sim_bots(Board& b) {
 }
 
 // 各候補手について 1 ラウンド先読みし最善手を返す
-// スコア: 100=即勝ち, 10=勝利パリティ, -100=即負け, -10=敗北パリティ
+// スコア≥10（勝利パリティ or 即勝ち）の手があればそれを返す
+// 見つからない場合は n=0 を返す（MCTS に任せる）
 static Move det_lookahead(const Board& b) {
     std::vector<Move> moves;
     gen_moves(b, moves);
     if (moves.empty()) return Move{{0,0,0}, 0};
 
-    Move best = moves[0]; int best_sc = INT_MIN;
+    Move best{}; int best_sc = INT_MIN;
     int round_size = b.number_takes * b.num_players;
 
     for (const Move& mv : moves) {
@@ -330,6 +331,8 @@ static Move det_lookahead(const Board& b) {
         if (sc > best_sc) { best_sc = sc; best = mv; }
         if (best_sc == 100) break;
     }
+    // 勝利パリティ以上の手がなければ MCTS に任せる
+    if (best_sc < 10) return Move{{0,0,0}, 0};
     return best;
 }
 
@@ -880,16 +883,20 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
     mcts::Move m;
     bool decided = false;
 
-    // 3a. 確定的先読み（AI戦のみ: P2〜P5 の行動が既知）
-    //     対人戦が検出された場合はスキップして MCTS を使う
-    if (!decided && !mode::is_human) {
-        mcts::Move dm = mcts::det_lookahead(b);
-        if (dm.n > 0) { m = dm; decided = true; }
+    // 優先順位:
+    //  1. Expectimax（終盤の確実な勝ち筋 - 最重要）
+    //  2. パリティ直接手（今すぐ勝てる）
+    //  3. det_lookahead（AI戦: 1ラウンド先読みで勝利パリティを狙う）
+    //  4. MCTS（汎用フォールバック）
+
+    // 1. 終盤Expectimax：空き≤ENDGAME_MAX_EMPTY なら確率的最善手
+    if (!decided && b.empty_count <= mcts::ENDGAME_MAX_EMPTY) {
+        mcts::Endgame eg;
+        mcts::EndgameResult er = eg.solve(b, my_id, mcts::ENDGAME_NODE_CAP);
+        if (er.solved) { m = er.move; decided = true; }
     }
 
-    // 3b. パリティ直接手：勝利パリティなら最適マス数の手を即選択
-    //     仮定: 全員が number_takes マスずつ取る
-    //     条件: empty % (number_takes * num_players) == number_takes
+    // 2. パリティ直接手：empty % (k*n) == k なら即勝ち
     if (!decided && number_takes > 0) {
         int round_size  = number_takes * num_players;
         int target_take = b.empty_count % round_size;
@@ -902,14 +909,15 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
         }
     }
 
-    // 3b. 終盤Expectimax：空き≤ENDGAME_MAX_EMPTY なら確率的最善手を使う
-    if (!decided && b.empty_count <= mcts::ENDGAME_MAX_EMPTY) {
-        mcts::Endgame eg;
-        mcts::EndgameResult er = eg.solve(b, my_id, mcts::ENDGAME_NODE_CAP);
-        if (er.solved) { m = er.move; decided = true; }
+    // 3. 確定的先読み（AI戦のみ）
+    //    スコア≥10（勝利パリティ or 即勝ち）の手があれば採用
+    //    スコア<0 の場合は MCTS に任せる
+    if (!decided && !mode::is_human) {
+        mcts::Move dm = mcts::det_lookahead(b);
+        if (dm.n > 0) { m = dm; decided = true; }
     }
 
-    // 4. MCTS（スレッドプール並列、パリティ評価込み）
+    // 4. MCTS（スレッドプール並列、確定的ロールアウト使用）
     if (!decided) {
         double budget = mcts::budget_per_move(b.empty_count, num_players);
         m = pool::search(b, budget);
