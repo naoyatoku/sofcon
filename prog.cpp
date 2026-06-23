@@ -107,12 +107,12 @@ static double budget_per_move(int empty_count, int num_players) {
 // ----------------------------------------------------------------
 struct Board {
     int8_t g[MAXN][MAXN];
-    int H, W, num_players, current_player, empty_count;
+    int H, W, num_players, current_player, empty_count, number_takes;
     bool done;
     int winner;
 
-    void init(const int board[][MAXN], int h, int w, int np, int cur) {
-        H = h; W = w; num_players = np; current_player = cur;
+    void init(const int board[][MAXN], int h, int w, int np, int cur, int nt = 3) {
+        H = h; W = w; num_players = np; current_player = cur; number_takes = nt;
         empty_count = 0; done = false; winner = 0;
         for (int r = 0; r < H; ++r)
             for (int c = 0; c < W; ++c) {
@@ -225,6 +225,20 @@ static Move fast_random_move(const Board& b) {
         if (!extended) break;
     }
     return m;
+}
+
+// ----------------------------------------------------------------
+//  パリティ評価
+//    全員が number_takes マスずつ取ると仮定したとき、
+//    現在のプレイヤーが最後のマスを取れるかを判定する。
+//    勝利条件: empty % (number_takes * num_players) == number_takes
+// ----------------------------------------------------------------
+static int parity_winner(const Board& b) {
+    if (b.number_takes <= 0) return 0;
+    int round_size = b.number_takes * b.num_players;
+    int rem = b.empty_count % round_size;
+    if (rem >= 1 && rem <= b.number_takes) return b.current_player;
+    return 0;  // 0 = 不明（勝ち保証なし）
 }
 
 // ----------------------------------------------------------------
@@ -391,7 +405,9 @@ public:
                 winner = nodes[leaf].board.winner;
             } else {
                 if (!nodes[leaf].expanded) expand(leaf);
-                winner = rollout(nodes[leaf].board);
+                // パリティで評価できればロールアウト不要
+                winner = parity_winner(nodes[leaf].board);
+                if (winner == 0) winner = rollout(nodes[leaf].board);
             }
             backprop(leaf, winner);
             ++sims;
@@ -699,24 +715,39 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
         for (int c = 0; c < W; ++c)
             board[r][c] = (int)(signed char)floor[r][c];
 
-    int my_id       = (int)(signed char)rules.your_number;
-    int num_players = (int)(signed char)rules.number_players;
+    int my_id        = (int)(signed char)rules.your_number;
+    int num_players  = (int)(signed char)rules.number_players;
+    int number_takes = (int)(unsigned char)rules.number_takes;
 
     mcts::Board b;
-    b.init(board, H, W, num_players, my_id);
+    b.init(board, H, W, num_players, my_id, number_takes);
 
     mcts::Move m;
     bool decided = false;
 
-    // 3. 終盤Expectimax：空き≤ENDGAME_MAX_EMPTY なら確率的最善手を使う
-    //    完全探索でなくても部分評価の最善手はMCTSより良い
-    if (b.empty_count <= mcts::ENDGAME_MAX_EMPTY) {
+    // 3a. パリティ直接手：勝利パリティなら最適マス数の手を即選択
+    //     仮定: 全員が number_takes マスずつ取る
+    //     条件: empty % (number_takes * num_players) == number_takes
+    if (!decided && number_takes > 0) {
+        int round_size  = number_takes * num_players;
+        int target_take = b.empty_count % round_size;
+        if (target_take >= 1 && target_take <= number_takes) {
+            std::vector<mcts::Move> moves;
+            mcts::gen_moves(b, moves);
+            for (const mcts::Move& mv : moves) {
+                if (mv.n == target_take) { m = mv; decided = true; break; }
+            }
+        }
+    }
+
+    // 3b. 終盤Expectimax：空き≤ENDGAME_MAX_EMPTY なら確率的最善手を使う
+    if (!decided && b.empty_count <= mcts::ENDGAME_MAX_EMPTY) {
         mcts::Endgame eg;
         mcts::EndgameResult er = eg.solve(b, my_id, mcts::ENDGAME_NODE_CAP);
         if (er.solved) { m = er.move; decided = true; }
     }
 
-    // 4. MCTS（スレッドプール並列）
+    // 4. MCTS（スレッドプール並列、パリティ評価込み）
     if (!decided) {
         double budget = mcts::budget_per_move(b.empty_count, num_players);
         m = pool::search(b, budget);
