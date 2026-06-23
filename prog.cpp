@@ -947,11 +947,7 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
         m = pool::search(b, budget);
     }
 
-    // 5. 選んだ手を number_takes まで拡張（重要: k>3 のステージで全枠を使い切る）
-    if (m.n < number_takes)
-        m = mcts::extend_move(b, m, number_takes);
-
-    // 6. 結果を出力引数に書き戻す
+    // 5. 結果を出力引数に書き戻す
     *count = (char)m.n;
     for (int i = 0; i < m.n; ++i) {
         lands[i].y = m.cells[i] / W;
