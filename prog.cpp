@@ -682,7 +682,7 @@ private:
     }
 };
 
-} // namespace mcts
+}; // namespace mcts
 
 // ============================================================
 //  スレッドプール
@@ -794,7 +794,7 @@ static mcts::Move search(const mcts::Board& board, double budget_ms) {
     return mv_for[best_k];
 }
 
-} // namespace pool
+}; // namespace pool
 
 // ============================================================
 //  対戦モード検出
@@ -829,7 +829,7 @@ namespace mode {
                 prev[r][c] = floor[r][c];
         have_prev = true;
     }
-} // namespace mode
+}; // namespace mode
 
 // ============================================================
 //  DLL エクスポート関数
