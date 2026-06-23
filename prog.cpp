@@ -149,11 +149,20 @@ static thread_local std::mt19937 rng{
 //  合法手生成（number_takes まで対応）
 //  DFS で連結サブセットを列挙。anchor（最小インデックス）が正準形。
 // ----------------------------------------------------------------
+// 1アンカーあたりの生成上限。
+//   序盤（空きマスが多い）× 大きい number_takes での組合せ爆発を防ぐ。
+//   空きマスが減れば 1 アンカーの部分木は自然に小さくなり、実質全列挙になる。
+//   k≤5（見えているステージ最大）は通常この上限に達せず完全列挙される。
+static const int GEN_PER_ANCHOR_CAP = 256;
+
 static void gen_moves_dfs(const Board& b, Move& cur, int anchor,
-                          std::vector<Move>& out, int max_n) {
+                          std::vector<Move>& out, int max_n, int& budget) {
+    if (budget <= 0) return;
     out.push_back(cur);
+    --budget;                       // size-1 手は必ず生成される（budget≥1）
     if (cur.n >= max_n) return;
     for (int si = 0; si < cur.n; ++si) {
+        if (budget <= 0) return;
         int r0 = cur.cells[si] / b.W, c0 = cur.cells[si] % b.W;
         for (int d = 0; d < 4; ++d) {
             int r2 = r0 + DR[d], c2 = c0 + DC[d];
@@ -165,8 +174,9 @@ static void gen_moves_dfs(const Board& b, Move& cur, int anchor,
             for (int i=0; i<cur.n; ++i) if (cur.cells[i]==nb) {dup=true; break;}
             if (dup) continue;
             cur.cells[cur.n++] = nb;
-            gen_moves_dfs(b, cur, anchor, out, max_n);
+            gen_moves_dfs(b, cur, anchor, out, max_n, budget);
             cur.n--;
+            if (budget <= 0) return;
         }
     }
 }
@@ -178,7 +188,8 @@ static void gen_moves(const Board& b, std::vector<Move>& out) {
         for (int c = 0; c < b.W; ++c) {
             if (b.g[r][c] != EMPTY) continue;
             Move m{}; m.n=1; m.cells[0]=r*b.W+c;
-            gen_moves_dfs(b, m, m.cells[0], out, k);
+            int budget = GEN_PER_ANCHOR_CAP;
+            gen_moves_dfs(b, m, m.cells[0], out, k, budget);
         }
     // 各手のセルをソートして正準化
     for (Move& m : out)
@@ -218,6 +229,25 @@ static Move extend_move(const Board& b, Move m, int max_n) {
         if (!extended) break;
     }
     return m;
+}
+
+// ----------------------------------------------------------------
+//  ちょうど size マスの連結手を直接構築する（パリティ直接手用）
+//    gen_moves の全列挙に頼らないので、大きい number_takes でも高速・安全。
+//    各空きマスを起点に貪欲拡張し、最初に size に到達したものを返す。
+//    どこからも size に届かなければ n=0 を返す。
+// ----------------------------------------------------------------
+static Move build_exact_move(const Board& b, int size) {
+    size = std::min(size, 10);
+    if (size <= 0) return Move{{0}, 0};
+    for (int r = 0; r < b.H; ++r)
+        for (int c = 0; c < b.W; ++c) {
+            if (b.g[r][c] != EMPTY) continue;
+            Move m{}; m.n = 1; m.cells[0] = r * b.W + c;
+            m = extend_move(b, m, size);
+            if (m.n == size) return m;
+        }
+    return Move{{0}, 0};
 }
 
 // ----------------------------------------------------------------
@@ -640,8 +670,12 @@ private:
     std::vector<uint32_t> moveMasks_; std::unordered_map<uint64_t, float> memo_;
 
     // DFS で連結サブセットのビットマスクを列挙
+    //   防御的に上限（BUILD_MOVES_CAP）を設け、超えたら打ち切る。
+    //   solve() 自体は empty≤20 で呼ばれるが、k が大きいと部分集合が増えるため。
+    static const int BUILD_MOVES_CAP = 300000;
     void buildMoves_dfs(uint32_t mask, int n_empty, int n_takes,
                         std::unordered_set<uint32_t>& seen) {
+        if ((int)moveMasks_.size() >= BUILD_MOVES_CAP) return;
         if (!seen.insert(mask).second) return;  // 重複スキップ
         moveMasks_.push_back(mask);
         if (__builtin_popcount(mask) >= n_takes) return;
@@ -922,15 +956,13 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
     }
 
     // 2. パリティ直接手：empty % (k*n) == k なら即勝ち
+    //    gen_moves の全列挙に頼らず目標サイズの手を直接構築（大きいkでも安全）
     if (!decided && number_takes > 0) {
         int round_size  = number_takes * num_players;
         int target_take = b.empty_count % round_size;
         if (target_take >= 1 && target_take <= number_takes) {
-            std::vector<mcts::Move> moves;
-            mcts::gen_moves(b, moves);
-            for (const mcts::Move& mv : moves) {
-                if (mv.n == target_take) { m = mv; decided = true; break; }
-            }
+            mcts::Move mv = mcts::build_exact_move(b, target_take);
+            if (mv.n == target_take) { m = mv; decided = true; }
         }
     }
 
