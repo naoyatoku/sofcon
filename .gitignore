@@ -13,12 +13,11 @@ train/log.txt
 train_log.txt
 train_err.txt
 
-# Auto-generated files (regenerate with tools/bundle.py or export_weights.py)
-cpp/weights.h
+# Auto-generated submission bundle (regenerate with tools/bundle.py)
 prog_submit.cpp
 
-# Training checkpoints (large binaries)
-model/checkpoint_16ch_15x15.pt
+# 注: cpp/weights.h と model/checkpoint_16ch_15x15.pt は別PCでの
+#     継続・ビルドのため意図的にコミットする（export_weights.py で再生成可能）。
 
 # Checkpoint backups (keep the live model/checkpoint.pt only)
 *.pt.bak

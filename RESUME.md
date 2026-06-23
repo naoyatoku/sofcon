@@ -31,25 +31,32 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
 
 ---
 
-## 🟢 現在の到達点
+## 🟢 現在の到達点（2026-06-23 時点・実機 23/30勝 = 過去最高）
 
 | 成果物 | 状態 |
 |--------|------|
-| **`prog.cpp`** | ✅ **提出本命。スレッドプール+終盤ソルバー完備** |
-| **スレッドプール並列化** | ✅ StartStage()で起動、50ステージ通して稼働。per-callスレッド生成コストゼロ |
-| **終盤厳密解ソルバー** | ✅ 空き≤20マスで完全探索（パラノイド・2〜5人対応）|
-| 時間管理（StartStage連動） | ✅ StartStage()でステージカウント→残り時間÷残りステージで予算配分 |
-| **DLLビルド環境** | ✅ MSYS2 MinGW-w64 GCC 15.2.0 インストール済み（C:\msys64） |
-| **build.bat** | ✅ ダブルクリックで prog.dll 生成 |
-| **実機テスト** | ✅ 22/30ステージ勝利（シングルスレッド版）|
+| **`prog.cpp`** | ✅ **提出本命。下記の多段戦略+スレッドプール完備** |
+| **PlayStage 判断順** | ① Expectimaxソルバー(空き≤20) → ② パリティ直接手 → ③ det_lookahead(AI戦のみ) → ④ MCTS |
+| **Expectimax ソルバー** | ✅ 終盤を確率的に評価（自分=最大化, 敵=平均/ランダム仮定）。5人戦でも機能 |
+| **パリティ戦略** | ✅ Nim理論。`empty % (number_takes×num_players) == number_takes` で勝ち手を直接構築 |
+| **AI戦 bot 完全再現** | ✅ P2(縦1) P3(横1) P4(横最大) P5(縦最大) を決定論シミュレーション |
+| **対戦モード自動検出** | ✅ P2/P3が2マス以上取れば対人戦と判定し戦略切替 |
+| **可変 number_takes 対応** | ✅ gen_moves/Endgame が 3〜10 マスに対応 |
+| **クラッシュ防止** | ✅ gen_moves に1アンカー上限(256) → 隠しステージ(k最大10)で爆発しない |
+| **NN guided MCTS (PUCT)** | ✅ `cpp/weights.h` があれば自動有効(`__has_include`)。16ch×3blocks |
+| **スレッドプール並列化** | ✅ StartStage()で起動、50ステージ通して稼働 |
+| **DLLビルド環境** | ✅ MSYS2 MinGW-w64（C:\msys64）。build.bat は -O3 |
 
-### 📊 セルフテスト対ランダム勝率（9×9, 各20戦）
-| 人数 | 勝率 | ベースライン | 判定 |
-|---|---|---|---|
-| 2人 | **100%** | 50% | ✅ 圧勝 |
-| 3人 | **85%** | 33% | ✅ 圧勝 |
-| 4人 | **60%** | 25% | ✅ 優勢 |
-| 5人 | **30%** | 20% | ✅ OK |
+### ⚠️ コンテスト仕様の追加判明事項（重要）
+- **number_takes は可変**：見えている1〜30ステージは最大5、**隠し31〜50ステージは最大10**まで上がる
+- 取れるマス数を毎手 `number_takes` まで使うのが基本（k>3で3マスしか取らないと大敗する）
+- AI戦と対人戦の2フェーズがあり、**実行時に区別できない** → mode自動検出で対応
+- gen_moves の合法手数（実測, 空き盤面）: k=8で旧138,543手→新4,470手（上限で抑制済み）
+
+### 🧠 NN 学習状況
+- `model/checkpoint_16ch_15x15.pt`（15×15, 16ch×3blocks, players 2-3, sims=5）
+- iter 370+ / loss 約4.4 まで低下。**このPCで放置継続中**（別PCでは checkpoint から resume 可能）
+- `cpp/weights.h` は上記 checkpoint から生成済み（コミット済み）
 
 ---
 
@@ -78,21 +85,42 @@ wsl -e bash -c "cd /mnt/c/Users/toku/private/sofcon/cpp && g++ -O2 -std=c++14 -p
 
 ---
 
+## 💻 別PCで続きを始める手順
+```bash
+git clone <repo> && cd sofcon
+# checkpoint と cpp/weights.h はコミット済みなので即ビルド可能
+build.bat               # prog.dll 生成（weights.h があるので NN 有効でビルドされる）
+```
+NN 学習を別PCで再開する場合（任意・PyTorch必要）:
+```bash
+python train/self_play.py --board_h 15 --board_w 15 --channels 16 --blocks 3 \
+    --sims 5 --iters 2000 --players_min 2 --players_max 3 \
+    --save model/checkpoint_16ch_15x15.pt
+# --no-resume を付けなければ checkpoint から継続
+```
+学習後に重みを反映:
+```bash
+python tools/export_weights.py --checkpoint model/checkpoint_16ch_15x15.pt --output cpp/weights.h
+```
+
 ## 📋 次回やることリスト（優先順）
+1. **NN を入れた版 vs 入れない版の実機勝率比較**
+   - weights.h を一時退避してビルド = NN無し版。両者で勝率を比べ、NNが効くか確認
+   - 現状の 23/30 は NN 込み（weights.h 存在下でビルド）か要確認
+2. **敗北ステージが理論上勝てるか検証**
+   - 負けたステージ盤面で時間無制限DFS → 勝ち手順の有無を確認
+   - 無ければ初期配置由来で勝率上限。あれば探索改善の余地あり
+3. **提出**
+   - `python tools/bundle.py --checkpoint model/checkpoint_16ch_15x15.pt --output prog_submit.cpp`
+     → ソース1ファイル化（コード提出も必要なため）
+   - `build.bat` → prog.dll + libwinpthread-1.dll
+   - 提出: prog_submit.cpp + prog.dll + libwinpthread-1.dll
+   - 提出期限まで残り約6日（2026-06-23 時点）
 
-### ★最優先：実機テスト
-1. **スレッドプール版を実機でテスト**
-   - `build.bat` でビルド → `prog.dll` + `libwinpthread-1.dll` を提出
-   - 前回 22/30勝 → スレッドプールで改善期待
-   - もし弱くなった場合は `prog.cpp` の `pool::init_once()` を無効化して単スレッドに戻す
-
-2. **コンテスト側ヘッダ（entry.h）がある場合**
-   - `entry.h` をプロジェクトフォルダに置いてから `build.bat` を実行
-   - `entry.h` の中で STAGE_Y_MAX 等が定義されていれば prog.cpp の `#ifndef` が無視される
-
-### 必要なら
-3. **スレッドプールが不安定な場合** → `pool::init_once()` をコメントアウトしてシングルスレッドに
-4. **`libwinpthread-1.dll` が配布できない場合** → winlibs win32スレッド版に移行（GitHub: brechtsanders/winlibs_mingw で "win32" 版を手動ダウンロード）
+### ハマりどころ
+- entry.h はコンテスト側ヘッダ。無ければ build.bat がダミー生成
+- `libwinpthread-1.dll` が配布不可なら winlibs win32スレッド版に移行
+- スレッドプールが不安定なら `pool::init_once()` を無効化して単スレッドに
 
 ---
 
