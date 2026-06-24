@@ -53,10 +53,39 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
 - AI戦と対人戦の2フェーズがあり、**実行時に区別できない** → mode自動検出で対応
 - gen_moves の合法手数（実測, 空き盤面）: k=8で旧138,543手→新4,470手（上限で抑制済み）
 
-### 🧠 NN 学習状況
-- `model/checkpoint_16ch_15x15.pt`（15×15, 16ch×3blocks, players 2-3, sims=5）
-- iter 370+ / loss 約4.4 まで低下。**このPCで放置継続中**（別PCでは checkpoint から resume 可能）
-- `cpp/weights.h` は上記 checkpoint から生成済み（コミット済み）
+### 🧠 NN 学習状況（2026-06-24 時点）
+- `model/checkpoint_16ch_15x15.pt`（15×15, **16ch×3blocks**, players 2-3）
+- **iter 1691 / loss 約0.82**。sims=50 に上げて教師を強化中（途中で停止しコミット）
+- `cpp/weights.h` は iter1691 の checkpoint から生成済み（コミット済み）
+- 実機 27勝（過去最高）は NN込みビルド。NN無し版と head-to-head では NN版が弱い
+  → 現NN(self-play sims少)は policy が弱く、本領は今後の高sims学習しだい
+
+### 💻 別PC（GPU機）で学習を再開する手順
+```bash
+git clone <repo> && cd sofcon          # checkpoint/weights.h はコミット済み
+# 学習再開（--no-resume を付けない＝checkpointから継続）
+python train/self_play.py --board_h 15 --board_w 15 \
+    --channels 16 --blocks 3 --sims 50 --iters 6000 \
+    --games 4 --players_min 2 --players_max 3 \
+    --save model/checkpoint_16ch_15x15.pt
+# 学習後に重みを反映：
+python tools/export_weights.py --checkpoint model/checkpoint_16ch_15x15.pt --output cpp/weights.h
+```
+⚠️ アーキテクチャ（channels=16, blocks=3）は inference.h と一致必須。変えると C++ 推論が壊れる。
+
+### ⚡ 学習を速くするには（重要）
+- **GPUはあまり効かない**：NNが極小＋MCTSは batch=1 逐次評価のため。真の律速は Python の MCTS/move-gen（CPU単スレッド）。
+- **効くのは CPU マルチプロセス並列**：自己対戦の各ゲームは独立 → コア数分の worker で並列実行すれば ほぼコア数倍。
+  - 現状 sims=50 で約5.8分/iter（4ゲーム逐次）。8並列なら約0.7分/iter ≈ 8倍速の見込み。
+  - **未実装**。`train/self_play.py` の `run_training` 内 `for _ in range(games_per_iter)` ループを
+    `multiprocessing.Pool` で並列化すればよい（play_game は独立なので素直に並列化できる）。
+- さらに上：並列ゲームのNN評価をバッチ化すれば GPU も活きる（大掛かり）。
+
+### 🌿 ブランチ
+- `main` … 提出版（実機27勝）。クリーンに保つ
+- `bot-diag` … botモデル自己診断モード（`-DBOT_DIAG` ビルドで prog_diag.dll）。
+  `<det_solved>`なのに負ける残バグ（botモデルの実機ズレ）を特定する用。
+  実機で走らせ、ズレたら `bot_diag.log` に記録して abort する。
 
 ---
 
