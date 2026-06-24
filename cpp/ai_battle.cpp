@@ -32,12 +32,12 @@ struct G {
 };
 
 // ---- 決定論bot（prog.cpp と同一） ----
-static void bot_p2(G& b, int cur) {           // 左上から縦1マス
-    for (int c=0;c<b.W;++c) for (int r=0;r<b.H;++r)
+static void bot_p2(G& b, int cur) {           // 左上→右下（行優先・上の行から）
+    for (int r=0;r<b.H;++r) for (int c=0;c<b.W;++c)
         if (b.at(r,c)==0){ b.set(r,c,cur); --b.empty; return; }
 }
-static void bot_p3(G& b, int cur) {           // 右下→左上（列優先・右の列から）
-    for (int c=b.W-1;c>=0;--c) for (int r=b.H-1;r>=0;--r)
+static void bot_p3(G& b, int cur) {           // 右下→左上（行優先・下の行から）
+    for (int r=b.H-1;r>=0;--r) for (int c=b.W-1;c>=0;--c)
         if (b.at(r,c)==0){ b.set(r,c,cur); --b.empty; return; }
 }
 static void bot_p4(G& b, int cur) {           // 横最大ラン: 数大→左→上

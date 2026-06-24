@@ -291,19 +291,20 @@ static Move fast_random_move(const Board& b) {
 //  Player 4: 横方向で最大連結グループ（左上優先）
 //  Player 5: 縦方向で最大連結グループ（左上優先）
 // ----------------------------------------------------------------
+// P2: 左上から右下へ走査（行優先・上の行から、行内は左から）
 static void bot_p2(Board& b) {
-    for (int c = 0; c < b.W; ++c)
-        for (int r = 0; r < b.H; ++r)
+    for (int r = 0; r < b.H; ++r)
+        for (int c = 0; c < b.W; ++c)
             if (b.g[r][c] == EMPTY) {
                 int cell = r * b.W + c;
                 b.apply(&cell, 1); return;
             }
 }
 
-// P3: 右下から左上へ走査（P2の鏡＝列優先・右の列から、列内は下から）
+// P3: 右下から左上へ走査（P2の鏡＝行優先・下の行から、行内は右から）
 static void bot_p3(Board& b) {
-    for (int c = b.W - 1; c >= 0; --c)
-        for (int r = b.H - 1; r >= 0; --r)
+    for (int r = b.H - 1; r >= 0; --r)
+        for (int c = b.W - 1; c >= 0; --c)
             if (b.g[r][c] == EMPTY) {
                 int cell = r * b.W + c;
                 b.apply(&cell, 1); return;
