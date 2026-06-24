@@ -36,27 +36,27 @@ static void bot_p2(G& b, int cur) {           // 左上から縦1マス
     for (int c=0;c<b.W;++c) for (int r=0;r<b.H;++r)
         if (b.at(r,c)==0){ b.set(r,c,cur); --b.empty; return; }
 }
-static void bot_p3(G& b, int cur) {           // 右下から横1マス
-    for (int r=b.H-1;r>=0;--r) for (int c=b.W-1;c>=0;--c)
+static void bot_p3(G& b, int cur) {           // 右下→左上（列優先・右の列から）
+    for (int c=b.W-1;c>=0;--c) for (int r=b.H-1;r>=0;--r)
         if (b.at(r,c)==0){ b.set(r,c,cur); --b.empty; return; }
 }
-static void bot_p4(G& b, int cur) {           // 横最大連結
-    int k=b.takes,best=0,br=0,bc=0;
-    for (int r=0;r<b.H;++r){ int run=0,sc=0;
-        for (int c=0;c<=b.W;++c){
-            if (c<b.W&&b.at(r,c)==0){ if(!run)sc=c; ++run; }
-            else if (run){ if(std::min(run,k)>best){best=std::min(run,k);br=r;bc=sc;} run=0; }
-        }}
-    for (int i=0;i<best;++i){ b.set(br,bc+i,cur); --b.empty; }
+static void bot_p4(G& b, int cur) {           // 横最大ラン: 数大→左→上
+    int k=b.takes,best=0,bestCol=0,bestRow=0,br=-1,bc=-1;
+    for (int r=0;r<b.H;++r){ int c=0;
+        while(c<b.W){ if(b.at(r,c)!=0){++c;continue;}
+            int s=c; while(c<b.W&&b.at(r,c)==0)++c; int take=std::min(c-s,k);
+            bool better=(br<0)||take>best||(take==best&&s<bestCol)||(take==best&&s==bestCol&&r<bestRow);
+            if(better){best=take;bestCol=s;bestRow=r;br=r;bc=s;} } }
+    if(br>=0) for (int i=0;i<best;++i){ b.set(br,bc+i,cur); --b.empty; }
 }
-static void bot_p5(G& b, int cur) {           // 縦最大連結
-    int k=b.takes,best=0,br=0,bc=0;
-    for (int c=0;c<b.W;++c){ int run=0,sr=0;
-        for (int r=0;r<=b.H;++r){
-            if (r<b.H&&b.at(r,c)==0){ if(!run)sr=r; ++run; }
-            else if (run){ if(std::min(run,k)>best){best=std::min(run,k);br=sr;bc=c;} run=0; }
-        }}
-    for (int i=0;i<best;++i){ b.set(br+i,bc,cur); --b.empty; }
+static void bot_p5(G& b, int cur) {           // 縦最大ラン: 数大→上→左
+    int k=b.takes,best=0,bestRow=0,bestCol=0,br=-1,bc=-1;
+    for (int c=0;c<b.W;++c){ int r=0;
+        while(r<b.H){ if(b.at(r,c)!=0){++r;continue;}
+            int s=r; while(r<b.H&&b.at(r,c)==0)++r; int take=std::min(r-s,k);
+            bool better=(br<0)||take>best||(take==best&&s<bestRow)||(take==best&&s==bestRow&&c<bestCol);
+            if(better){best=take;bestRow=s;bestCol=c;br=s;bc=c;} } }
+    if(br>=0) for (int i=0;i<best;++i){ b.set(br+i,bc,cur); --b.empty; }
 }
 static void apply_bot(G& b, int cur){
     if (cur==2) bot_p2(b,cur); else if (cur==3) bot_p3(b,cur);

@@ -300,47 +300,58 @@ static void bot_p2(Board& b) {
             }
 }
 
+// P3: 右下から左上へ走査（P2の鏡＝列優先・右の列から、列内は下から）
 static void bot_p3(Board& b) {
-    for (int r = b.H - 1; r >= 0; --r)
-        for (int c = b.W - 1; c >= 0; --c)
+    for (int c = b.W - 1; c >= 0; --c)
+        for (int r = b.H - 1; r >= 0; --r)
             if (b.g[r][c] == EMPTY) {
                 int cell = r * b.W + c;
                 b.apply(&cell, 1); return;
             }
 }
 
+// P4: 横方向の最大ラン。優先順: 取得数大 → 開始列が左 → 行が上
 static void bot_p4(Board& b) {
-    int k = b.number_takes, best = 0, br = 0, bc = 0;
+    int k = b.number_takes;
+    int best = 0, bestCol = 0, bestRow = 0, br = -1, bc = -1;
     for (int r = 0; r < b.H; ++r) {
-        int run = 0, sc = 0;
-        for (int c = 0; c <= b.W; ++c) {
-            if (c < b.W && b.g[r][c] == EMPTY) { if (!run) sc = c; ++run; }
-            else if (run) {
-                if (std::min(run, k) > best) { best = std::min(run, k); br = r; bc = sc; }
-                run = 0;
-            }
+        int c = 0;
+        while (c < b.W) {
+            if (b.g[r][c] != EMPTY) { ++c; continue; }
+            int s = c;
+            while (c < b.W && b.g[r][c] == EMPTY) ++c;
+            int take = std::min(c - s, k);   // 行rのラン [s, c)
+            bool better = (br < 0) || take > best
+                || (take == best && s < bestCol)
+                || (take == best && s == bestCol && r < bestRow);
+            if (better) { best = take; bestCol = s; bestRow = r; br = r; bc = s; }
         }
     }
-    if (best > 0) {
+    if (br >= 0 && best > 0) {
         int cells[10];
-        for (int i = 0; i < best; ++i) cells[i] = br * b.W + bc + i;
+        for (int i = 0; i < best; ++i) cells[i] = br * b.W + (bc + i);
         b.apply(cells, best);
     }
 }
 
+// P5: 縦方向の最大ラン。優先順: 取得数大 → 行が上 → 列が左
 static void bot_p5(Board& b) {
-    int k = b.number_takes, best = 0, br = 0, bc = 0;
-    for (int c = 0; c < b.W; ++c) {  // 列優先で左上を選ぶ
-        int run = 0, sr = 0;
-        for (int r = 0; r <= b.H; ++r) {
-            if (r < b.H && b.g[r][c] == EMPTY) { if (!run) sr = r; ++run; }
-            else if (run) {
-                if (std::min(run, k) > best) { best = std::min(run, k); br = sr; bc = c; }
-                run = 0;
-            }
+    int k = b.number_takes;
+    int best = 0, bestRow = 0, bestCol = 0, br = -1, bc = -1;
+    for (int c = 0; c < b.W; ++c) {
+        int r = 0;
+        while (r < b.H) {
+            if (b.g[r][c] != EMPTY) { ++r; continue; }
+            int s = r;
+            while (r < b.H && b.g[r][c] == EMPTY) ++r;
+            int take = std::min(r - s, k);   // 列cのラン [s, r)
+            bool better = (br < 0) || take > best
+                || (take == best && s < bestRow)
+                || (take == best && s == bestRow && c < bestCol);
+            if (better) { best = take; bestRow = s; bestCol = c; br = s; bc = c; }
         }
     }
-    if (best > 0) {
+    if (br >= 0 && best > 0) {
         int cells[10];
         for (int i = 0; i < best; ++i) cells[i] = (br + i) * b.W + bc;
         b.apply(cells, best);
