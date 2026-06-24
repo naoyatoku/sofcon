@@ -962,6 +962,79 @@ namespace mode {
 }; // namespace mode
 
 // ============================================================
+//  botモデル自己診断（BOT_DIAG時のみ）
+//    自分の手の後、sim_bots で敵の応手を予測して保存。
+//    次ターンで実際の盤面と照合し、ズレたらログ出力して abort。
+//    → どのステージ・どのマス・どのプレイヤーが予測と違うか分かる。
+//    AI戦(!is_human)かつ my_id==1 のときのみ有効。
+// ============================================================
+#ifdef BOT_DIAG
+#include <cassert>
+#include <cstdio>
+namespace diag {
+    static bool have_pred = false;
+    static int  pred[mcts::MAXN][mcts::MAXN];
+    static int  pred_H = 0, pred_W = 0;
+    static int  stage = 0;
+    static int  turn  = 0;
+
+    static void on_stage_start() { have_pred = false; ++stage; turn = 0; }
+
+    // ターン開始時: 前ターンの予測と実盤面を照合
+    static void check(const int board[][mcts::MAXN], int H, int W) {
+        if (!have_pred) return;
+        if (H != pred_H || W != pred_W) { have_pred = false; return; }
+        bool mismatch = false;
+        for (int r = 0; r < H && !mismatch; ++r)
+            for (int c = 0; c < W; ++c)
+                if (board[r][c] != pred[r][c]) { mismatch = true; break; }
+        if (!mismatch) return;
+
+        FILE* f = std::fopen("bot_diag.log", "a");
+        if (f) {
+            std::fprintf(f, "=== MISMATCH stage=%d turn=%d ===\n", stage, turn);
+            for (int r = 0; r < H; ++r) {
+                for (int c = 0; c < W; ++c) {
+                    if (board[r][c] != pred[r][c])
+                        std::fprintf(f, "  (r=%d,c=%d) pred=%d actual=%d\n",
+                                     r, c, pred[r][c], board[r][c]);
+                }
+            }
+            std::fprintf(f, "  [pred board]\n");
+            for (int r = 0; r < H; ++r) {
+                std::fprintf(f, "   ");
+                for (int c = 0; c < W; ++c) std::fprintf(f, "%2d", pred[r][c]);
+                std::fprintf(f, "\n");
+            }
+            std::fprintf(f, "  [actual board]\n");
+            for (int r = 0; r < H; ++r) {
+                std::fprintf(f, "   ");
+                for (int c = 0; c < W; ++c) std::fprintf(f, "%2d", board[r][c]);
+                std::fprintf(f, "\n");
+            }
+            std::fclose(f);
+        }
+        // 停止：予測が外れた＝botモデルが実機と違う
+        assert(!"bot model mismatch (see bot_diag.log)");
+        std::abort();
+    }
+
+    // ターン終了時: 自分の手 m を適用し sim_bots で敵応手を予測
+    static void predict(const mcts::Board& before, const mcts::Move& m) {
+        mcts::Board sim = before;
+        sim.apply(m.cells, m.n);
+        mcts::sim_bots(sim);
+        pred_H = sim.H; pred_W = sim.W;
+        for (int r = 0; r < sim.H; ++r)
+            for (int c = 0; c < sim.W; ++c)
+                pred[r][c] = sim.g[r][c];
+        have_pred = true;
+        ++turn;
+    }
+}; // namespace diag
+#endif
+
+// ============================================================
 //  DLL エクスポート関数
 // ============================================================
 
@@ -970,6 +1043,9 @@ extern "C" __declspec(dllexport) void StartStage() {
     pool::init_once();
     mcts::on_stage_start();
     mode::reset();  // ステージ開始時に対戦モード検出をリセット
+#ifdef BOT_DIAG
+    diag::on_stage_start();
+#endif
 }
 
 // 各ステージの終了時に呼ばれる
@@ -1009,6 +1085,12 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
 
     mcts::Board b;
     b.init(board, H, W, num_players, my_id, number_takes);
+
+#ifdef BOT_DIAG
+    // 前ターンの予測と実盤面を照合（AI戦・my_id==1のみ）
+    if (!mode::is_human && my_id == 1)
+        diag::check(board, H, W);
+#endif
 
     mcts::Move m;
     bool decided = false;
@@ -1064,6 +1146,12 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
         double budget = mcts::budget_per_move(b.empty_count, num_players);
         m = pool::search(b, budget);
     }
+
+#ifdef BOT_DIAG
+    // 自分の手の後、敵応手を予測して次ターンの照合用に保存
+    if (!mode::is_human && my_id == 1)
+        diag::predict(b, m);
+#endif
 
     // 5. 結果を出力引数に書き戻す
     *count = (char)m.n;
