@@ -392,6 +392,65 @@ static Move det_lookahead(const Board& b) {
     return best;
 }
 
+// ----------------------------------------------------------------
+//  AI戦専用 終盤完全読みソルバー（敵=決定論bot）
+//    敵(P2〜P5)が確定的に動くので、枝分かれは自分(P1)の手だけ。
+//    勝てる手順が存在すれば、その最初の手を out_first に返す。
+//    Expectimax(敵=ランダム仮定)と違い、実際のbot相手に厳密。
+//    b は「自分(P1)の手番」の盤面である前提。
+// ----------------------------------------------------------------
+static bool det_solve(Board b, Move& out_first,
+                      std::chrono::steady_clock::time_point deadline) {
+    std::vector<Move> moves;
+    gen_moves(b, moves);
+    if (moves.empty()) return false;
+
+    int round_size = b.number_takes * b.num_players;
+
+    // 移動順: 即勝ち→勝利パリティ→その他 の順で試すと早く解に到達する
+    std::vector<std::pair<int,int>> ord;  // (score, move index)
+    ord.reserve(moves.size());
+    for (int i = 0; i < (int)moves.size(); ++i) {
+        Board sim = b;
+        sim.apply(moves[i].cells, moves[i].n);
+        int sc;
+        if (sim.done) {
+            sc = (sim.winner == 1) ? 100 : -100;
+        } else {
+            sim_bots(sim);  // 敵を全員進めて自分の手番へ
+            if (sim.done) sc = (sim.winner == 1) ? 100 : -100;
+            else {
+                int rem = (round_size > 0) ? sim.empty_count % round_size : 0;
+                sc = (rem >= 1 && rem <= sim.number_takes) ? 10 : -10;
+            }
+        }
+        ord.push_back({sc, i});
+    }
+    std::sort(ord.begin(), ord.end(),
+              [](const std::pair<int,int>& a, const std::pair<int,int>& b_) {
+                  return a.first > b_.first;
+              });
+
+    for (const auto& pr : ord) {
+        if (std::chrono::steady_clock::now() > deadline) return false;
+        const Move& mv = moves[pr.second];
+        Board sim = b;
+        sim.apply(mv.cells, mv.n);
+        if (sim.done) {
+            if (sim.winner == 1) { out_first = mv; return true; }
+            continue;
+        }
+        sim_bots(sim);  // 敵を全員進めて自分の手番へ
+        if (sim.done) {
+            if (sim.winner == 1) { out_first = mv; return true; }
+            continue;
+        }
+        Move dummy{};
+        if (det_solve(sim, dummy, deadline)) { out_first = mv; return true; }
+    }
+    return false;
+}
+
 // 確定的ロールアウト: 自分はランダム、相手は bot 確定
 static int det_rollout(Board b) {
     while (!b.done) {
@@ -943,10 +1002,24 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
     bool decided = false;
 
     // 優先順位:
-    //  1. Expectimax（終盤の確実な勝ち筋 - 最重要）
+    //  0. AI戦終盤完全読み（敵=決定論bot、厳密。最優先）
+    //  1. Expectimax（終盤の確率的最善手 - 敵=ランダム仮定）
     //  2. パリティ直接手（今すぐ勝てる）
     //  3. det_lookahead（AI戦: 1ラウンド先読みで勝利パリティを狙う）
     //  4. MCTS（汎用フォールバック）
+
+    // 0. AI戦終盤完全読み：敵が決定論的botなので厳密に解ける。
+    //    Expectimax(敵=ランダム仮定)より正確で「solvedなのに負け」を防ぐ。
+    //    my_id==1（当日戦固定）かつAI戦モードのときのみ。
+    if (!decided && !mode::is_human && my_id == 1
+        && b.empty_count <= mcts::ENDGAME_MAX_EMPTY) {
+        auto deadline = std::chrono::steady_clock::now()
+                      + std::chrono::milliseconds(150);
+        mcts::Move dm{};
+        if (mcts::det_solve(b, dm, deadline) && dm.n > 0) {
+            m = dm; decided = true;
+        }
+    }
 
     // 1. 終盤Expectimax：空き≤ENDGAME_MAX_EMPTY なら確率的最善手
     if (!decided && b.empty_count <= mcts::ENDGAME_MAX_EMPTY) {
