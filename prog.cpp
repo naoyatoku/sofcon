@@ -155,28 +155,42 @@ static thread_local std::mt19937 rng{
 //   k≤5（見えているステージ最大）は通常この上限に達せず完全列挙される。
 static const int GEN_PER_ANCHOR_CAP = 256;
 
-static void gen_moves_dfs(const Board& b, Move& cur, int anchor,
+// 明示スタックによる反復版（再帰なし）。
+//   seed（=anchor 1個の手）から、anchor を最小とする連結サブセットを
+//   max_n マスまですべて列挙して out に積む。budget で生成数を上限管理。
+//   重複は呼び出し側（gen_moves）の sort+unique で除去するため、
+//   列挙順は結果に影響しない。
+static void gen_moves_dfs(const Board& b, const Move& seed, int anchor,
                           std::vector<Move>& out, int max_n, int& budget) {
-    if (budget <= 0) return;
-    out.push_back(cur);
-    --budget;                       // size-1 手は必ず生成される（budget≥1）
-    if (cur.n >= max_n) return;
-    for (int si = 0; si < cur.n; ++si) {
+    static thread_local std::vector<Move> stack;  // 再利用でアロケーション削減
+    stack.clear();
+    stack.push_back(seed);
+
+    while (!stack.empty()) {
         if (budget <= 0) return;
-        int r0 = cur.cells[si] / b.W, c0 = cur.cells[si] % b.W;
-        for (int d = 0; d < 4; ++d) {
-            int r2 = r0 + DR[d], c2 = c0 + DC[d];
-            if (r2<0||r2>=b.H||c2<0||c2>=b.W) continue;
-            if (b.g[r2][c2] != EMPTY) continue;
-            int nb = r2*b.W+c2;
-            if (nb <= anchor) continue;  // anchor が最小になる正準形
-            bool dup = false;
-            for (int i=0; i<cur.n; ++i) if (cur.cells[i]==nb) {dup=true; break;}
-            if (dup) continue;
-            cur.cells[cur.n++] = nb;
-            gen_moves_dfs(b, cur, anchor, out, max_n, budget);
-            cur.n--;
-            if (budget <= 0) return;
+        Move cur = stack.back();
+        stack.pop_back();
+
+        out.push_back(cur);
+        --budget;                   // size-1 手は必ず生成される（budget≥1）
+        if (cur.n >= max_n) continue;
+
+        // cur の各セルの隣接空きマス（>anchor, 非重複）を足して子手を積む
+        for (int si = 0; si < cur.n; ++si) {
+            int r0 = cur.cells[si] / b.W, c0 = cur.cells[si] % b.W;
+            for (int d = 0; d < 4; ++d) {
+                int r2 = r0 + DR[d], c2 = c0 + DC[d];
+                if (r2<0||r2>=b.H||c2<0||c2>=b.W) continue;
+                if (b.g[r2][c2] != EMPTY) continue;
+                int nb = r2*b.W+c2;
+                if (nb <= anchor) continue;  // anchor が最小になる正準形
+                bool dup = false;
+                for (int i=0; i<cur.n; ++i) if (cur.cells[i]==nb) {dup=true; break;}
+                if (dup) continue;
+                Move nx = cur;
+                nx.cells[nx.n++] = nb;
+                stack.push_back(nx);
+            }
         }
     }
 }
