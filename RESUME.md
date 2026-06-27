@@ -53,6 +53,42 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
 - AI戦と対人戦の2フェーズがあり、**実行時に区別できない** → mode自動検出で対応
 - gen_moves の合法手数（実測, 空き盤面）: k=8で旧138,543手→新4,470手（上限で抑制済み）
 
+### 🧠🔥 強い教師（exact endgame solver）導入（2026-06-25）
+**問題**: sims=50 の MCTS が作る教師が弱く、loss を下げても「弱い先生の真似」で頭打ち。
+**対策**: 終盤（empty ≤ `SOLVE_THRESHOLD=12`）を**厳密ソルバーで解いて教師ラベルに**。
+- `game/solver.py` … メモ化 maxn 厳密ソルバー。`solve_value_vec()` / `solve_best_move()`。
+  - 実測コスト(2p,k=3,最悪密ブロブ): empty12≈0.56s, 14≈2.1s, 16≈124s(爆発) → 閾値12が安全。
+- `model/mcts.py` … 葉が empty≤12 なら NN value の代わりに**厳密値**を backup（探索自体が強化）。
+- `train/self_play.py` … 保存局面が empty≤12 なら **value教師=厳密勝者 / policy教師=最適手 one-hot** で上書き。
+- コスト: 1ゲーム 87s→100s（+13s, 終盤求解分）。≈6.7分/iter。
+- **学習再開済み**: iter 1935 から継続中。ログ `train/strong_teacher.log`（PID は起動時）。
+  起動コマンド例:
+  ```
+  python train/self_play.py --board_h 15 --board_w 15 --channels 16 --blocks 3 \
+      --sims 50 --iters 6000 --games 4 --players_min 2 --players_max 3 \
+      --save model/checkpoint_16ch_15x15.pt
+  ```
+### ⚡ マルチプロセス並列化（2026-06-27 実装済み）
+- 逐次自己対戦は実質1コアのみ使用 → 約31分/iter と判明（当初見積6.7分は誤り）。
+- `train/self_play.py` に `--workers N` を追加。`mp.Pool` で各ゲームを独立プロセスで並列実行。
+  - 各 worker は `_worker_init` で自前の net を1つ持ち、`torch.set_num_threads(1)` でピン留め。
+  - 毎iter 親が `state_dict` を全 worker に配り、`imap_unordered` でゲーム結果を回収。
+- **本番起動**: `--workers 12 --games 12 --sims 50`（物理14コア中12使用、OS用に余裕）。
+  ```
+  python train/self_play.py --board_h 15 --board_w 15 --channels 16 --blocks 3 \
+      --sims 50 --iters 6000 --games 12 --workers 12 --players_min 2 --players_max 3 \
+      --save model/checkpoint_16ch_15x15.pt
+  ```
+  ログ: `train/parallel.log` / `.err`。
+
+### 🔌 電源・スリープ対策（2026-06-27）— 学習が夜間に止まる問題
+- 原因①: **USBハブ給電の接触不良で瞬断** → AC直挿しに変更で解消。
+- 原因②: **蓋を閉じると Modern Standby（スリープ）でプロセス凍結**（電源断と誤認）。
+  - `powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0`（蓋AC=何もしない）
+  - `powercfg /change standby-timeout-ac 0`（アイドルスリープなし）
+  - `self_play.py` の `_keep_system_awake()`（`SetThreadExecutionState`）でOSレベルにも禁止。
+- **AC直挿し必須**（DC=バッテリー時はスリープ設定据え置き）。
+
 ### 🧠 NN 学習状況（2026-06-24 時点）
 - `model/checkpoint_16ch_15x15.pt`（15×15, **16ch×3blocks**, players 2-3）
 - **iter 1691 / loss 約0.82**。sims=50 に上げて教師を強化中（途中で停止しコミット）

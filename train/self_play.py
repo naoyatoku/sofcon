@@ -5,6 +5,23 @@ Self-play data generation and training loop.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+
+def _keep_system_awake():
+    """Windows: block idle sleep while training runs (lid-close is handled via
+    powercfg LIDACTION). No-op on non-Windows."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ES_CONTINUOUS = 0x80000000
+        ES_SYSTEM_REQUIRED = 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+        print("keep-awake: idle sleep blocked for this process", flush=True)
+    except Exception as e:
+        print(f"keep-awake: failed ({e})", flush=True)
+
+
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -14,6 +31,7 @@ from game.board import Board
 from game.move_gen import generate_moves
 from model.network import SofconNet, board_to_tensor, MAX_PLAYERS
 from model.mcts import MCTS
+from game.solver import solve_value_vec, solve_best_move, SOLVE_THRESHOLD
 
 
 # (tensor, policy_target[H*W], value_vec[MAX_PLAYERS], value_mask[MAX_PLAYERS])
@@ -38,36 +56,58 @@ def play_game(net: SofconNet, num_players: int, device: str,
     All players share the same network (self-play).
     """
     board = make_sample_board(H=board_h, W=board_w, num_players=num_players)
-    history = []  # (tensor, move_index, policy_dist, player_id)
+    n = num_players
+    # value mask: only the n existing relative seats contribute to the loss
+    mask = np.zeros(MAX_PLAYERS, dtype=np.float32)
+    mask[:n] = 1.0
+    # history entries: (tensor, policy_target, pid, exact_value_or_None)
+    history = []
+    # One solver memo for the WHOLE game: endgame positions are subsets of each
+    # other, so after the first ~2s solve at the threshold every later move is a
+    # cached lookup. Keyed on empty-mask (see solver.py) so it stays valid across
+    # moves regardless of who claimed which cell.
+    game_memo: dict = {}
 
     while not board.done:
         pid = board.current_player
         mcts = MCTS(net, pid, num_simulations, device)
         moves, visit_dist = mcts.get_policy(board)
 
-        # store anchor-cell policy target (H*W sized)
+        # ---- STRONG TEACHER: exact policy + value when the endgame is solvable ----
+        solvable = board.empty_count <= SOLVE_THRESHOLD
+        exact_move = solve_best_move(board, game_memo) if solvable else None
         policy_target = np.zeros(board.H * board.W, dtype=np.float32)
-        for move, prob in zip(moves, visit_dist):
-            anchor = min(move)
-            policy_target[anchor[0] * board.W + anchor[1]] += prob
+        if exact_move is not None:
+            anchor = min(exact_move)                 # one-hot on the optimal anchor
+            policy_target[anchor[0] * board.W + anchor[1]] = 1.0
+        else:
+            for move, prob in zip(moves, visit_dist):
+                anchor = min(move)
+                policy_target[anchor[0] * board.W + anchor[1]] += prob
+
+        # exact value target (relative -> absolute seat); reuses game_memo
+        exact_rel = solve_value_vec(board, n, game_memo) if solvable else None
+        exact_value = None
+        if exact_rel is not None:
+            exact_value = np.zeros(MAX_PLAYERS, dtype=np.float32)
+            exact_value[:n] = exact_rel              # relative to pid == its own seat 0
 
         tensor = board_to_tensor(board, device)
-        history.append((tensor, policy_target, pid))
+        history.append((tensor, policy_target, pid, exact_value))
 
         # sample move proportional to visit counts (exploration)
         chosen_idx = np.random.choice(len(moves), p=visit_dist)
         board.apply_move(moves[chosen_idx])
 
     winner = board.winner
-    n = board.num_players
-    # value mask: only the n existing relative seats contribute to the loss
-    mask = np.zeros(MAX_PLAYERS, dtype=np.float32)
-    mask[:n] = 1.0
 
     samples: List[Sample] = []
-    for tensor, policy_target, pid in history:
-        value_vec = np.zeros(MAX_PLAYERS, dtype=np.float32)
-        value_vec[(winner - pid) % n] = 1.0     # one-hot at winner's relative seat
+    for tensor, policy_target, pid, exact_value in history:
+        if exact_value is not None:
+            value_vec = exact_value                  # exact optimal-play outcome
+        else:
+            value_vec = np.zeros(MAX_PLAYERS, dtype=np.float32)
+            value_vec[(winner - pid) % n] = 1.0      # weak self-play outcome
         samples.append((tensor, policy_target, value_vec, mask))
     return samples
 
@@ -99,6 +139,36 @@ def train(net: SofconNet, optimizer: torch.optim.Optimizer,
     return loss.item()
 
 
+# ====================================================================== #
+#  Multiprocessing self-play workers (CPU). Each worker plays whole games
+#  independently with a private copy of the net, refreshed each iteration.
+# ====================================================================== #
+_WORKER_NET = None
+_WORKER_HW = None
+
+
+def _worker_init(board_h, board_w, channels, num_blocks):
+    """Build one net per worker process; pin to a single torch thread so that
+    N workers don't oversubscribe the CPU."""
+    global _WORKER_NET, _WORKER_HW
+    torch.set_num_threads(1)
+    _WORKER_NET = SofconNet(board_h=board_h, board_w=board_w,
+                            channels=channels, num_blocks=num_blocks)
+    _WORKER_NET.eval()
+    _WORKER_HW = (board_h, board_w)
+
+
+def _worker_play(args):
+    """Refresh weights from the latest state_dict, play one game, return samples."""
+    state_dict, num_players, num_simulations, seed = args
+    np.random.seed(seed)
+    _WORKER_NET.load_state_dict(state_dict)
+    bh, bw = _WORKER_HW
+    with torch.no_grad():
+        return play_game(_WORKER_NET, num_players, "cpu", num_simulations,
+                         board_h=bh, board_w=bw)
+
+
 def run_training(
     iterations: int = 200,
     games_per_iter: int = 4,
@@ -115,7 +185,9 @@ def run_training(
     num_blocks: int = 3,
     save_path: str = "model/checkpoint.pt",
     resume: bool = True,          # デフォルトで再開
+    workers: int = 1,             # >1 で自己対戦をマルチプロセス並列化
 ):
+    _keep_system_awake()
     net = SofconNet(board_h=board_h, board_w=board_w,
                     channels=channels, num_blocks=num_blocks).to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -133,13 +205,31 @@ def run_training(
         print(f"Starting fresh training (players {players_min}-{players_max}, "
               f"{save_path})", flush=True)
 
+    # ---- 並列プール（workers>1 のときのみ）----
+    pool = None
+    if workers > 1:
+        import multiprocessing as mp
+        torch.set_num_threads(1)   # 親はバッチが小さいので1スレッドで十分
+        pool = mp.Pool(workers, initializer=_worker_init,
+                       initargs=(board_h, board_w, channels, num_blocks))
+        print(f"Self-play pool: {workers} workers, {games_per_iter} games/iter",
+              flush=True)
+
     for it in range(start_iter, iterations + 1):
         net.eval()
-        for _ in range(games_per_iter):
-            np_players = np.random.randint(players_min, players_max + 1)
-            samples = play_game(net, np_players, device, num_simulations,
-                                board_h=board_h, board_w=board_w)
-            replay_buffer.extend(samples)
+        if pool is not None:
+            sd = {k: v.cpu() for k, v in net.state_dict().items()}
+            jobs = [(sd, int(np.random.randint(players_min, players_max + 1)),
+                     num_simulations, int(np.random.randint(2**31 - 1)))
+                    for _ in range(games_per_iter)]
+            for samples in pool.imap_unordered(_worker_play, jobs):
+                replay_buffer.extend(samples)
+        else:
+            for _ in range(games_per_iter):
+                np_players = np.random.randint(players_min, players_max + 1)
+                samples = play_game(net, np_players, device, num_simulations,
+                                    board_h=board_h, board_w=board_w)
+                replay_buffer.extend(samples)
 
         net.train()
         loss = train(net, optimizer, replay_buffer, batch_size, device)
@@ -158,6 +248,9 @@ def run_training(
                        save_path)
             print(f"  -> checkpoint saved (iter {it})", flush=True)
 
+    if pool is not None:
+        pool.close()
+        pool.join()
     print("Training complete.", flush=True)
     return net
 
@@ -175,6 +268,7 @@ if __name__ == "__main__":
     p.add_argument("--channels",    type=int, default=16)
     p.add_argument("--blocks",      type=int, default=3)
     p.add_argument("--device",      default="cpu")
+    p.add_argument("--workers",     type=int, default=1, help="自己対戦の並列プロセス数")
     p.add_argument("--save",        default="model/checkpoint.pt", help="保存先")
     p.add_argument("--no-resume",   action="store_true", help="最初からやり直す")
     args = p.parse_args()
@@ -184,5 +278,5 @@ if __name__ == "__main__":
                  players_min=args.players_min, players_max=args.players_max,
                  board_h=args.board_h, board_w=args.board_w,
                  channels=args.channels, num_blocks=args.blocks,
-                 save_path=args.save,
+                 save_path=args.save, workers=args.workers,
                  device=args.device, resume=not args.no_resume)
