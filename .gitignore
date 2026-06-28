@@ -58,3 +58,6 @@ Release/
 
 # Training stderr logs
 train/*.err
+
+# Contest-provided header (build.bat auto-generates a dummy locally)
+entry.h
