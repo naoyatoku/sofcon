@@ -40,8 +40,9 @@ def main():
 
     ckpt = torch.load(args.checkpoint, map_location=args.device)
     H = ckpt.get("board_h", 9); W = ckpt.get("board_w", 9)
+    ch = ckpt.get("channels", 64); nb = ckpt.get("num_blocks", 5)
     NP = args.players
-    net = SofconNet(board_h=H, board_w=W)
+    net = SofconNet(board_h=H, board_w=W, channels=ch, num_blocks=nb)
     net.load_state_dict(ckpt["model"]); net.eval()
 
     print(f"NN(iter {ckpt.get('iter','?')}, sims={args.nn_sims}) "

@@ -31,6 +31,37 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
 
 ---
 
+## 📌 別PCでの続き（2026-06-29 引き継ぎ）— まずここを読む
+
+### A. NN 学習（このPCで継続中。別PCへは git pull で引き継ぐ）
+- checkpoint は **iter 3090 付近**まで進行（強い教師＋6ワーカー並列、低電力モードで安定稼働）。
+- 起動コマンド（AC直挿し必須・スリープ対策済み）:
+  ```
+  python train/self_play.py --board_h 15 --board_w 15 --channels 16 --blocks 3 \
+      --sims 50 --iters 6000 --games 6 --workers 6 --players_min 2 --players_max 3 \
+      --save model/checkpoint_16ch_15x15.pt
+  ```
+- **早期評価（head2head: NN-MCTS vs 純粋MCTS, 2P）**: iter2425=50.0%、iter2970も≈50%。
+  → まだ「強い教師が明確に効いた」とは言えず**互角**。実機テスト（明日の環境）が本判断。
+  - 注意: head2head は純粋MCTS相手であって**実機botとは別物**。
+  - `tools/head2head.py` は arch(channels/blocks) を checkpoint から読むよう修正済み。
+
+### B. conv2d 用テンソルヘルパー（別PCで続ける本題）→ `cpp/tensor.h`
+- 目的: NN推論の conv2d を、先頭ポインタ+offsetで窓をずらす軽量アクセサで実装。
+  範囲外0返しで padding を自然表現、dot() の x_ofs/y_ofs でカーネルをスライド。
+- **🔴 まず直す致命バグ**: `tensor_2d::v()` の添字 `y*__W*x` → 正しくは `y*__W + x`
+  （ファイル内 FIXME 済み）。これを直さないと conv 出力が全部壊れる。
+- その他の指摘（tensor.h 冒頭コメントに全記載）:
+  - `__name`（先頭2アンダースコア）は処理系予約 → 改名推奨。
+  - `tensor_3d::__win_cache` は共有可変でスレッド非安全。推論はスレッドプール並列
+    なので、重み共有なら dot() 内でローカル tensor_2d を作る方式へ。
+  - 形状ASSERT・conv内部の分岐除去（高速化）は後回しでOK。
+- **次の一手**: バグ修正 → 既存 `cpp/inference_impl.h` の `conv2d` と同入力で
+  出力一致する単体テスト（`cpp/test_tensor.cpp` 想定）を書いて突き合わせる。
+  ASSERT は SOFCON_DEBUG 時のみ有効な自前マクロを用意（本番で abort させない）。
+
+---
+
 ## 🟢 現在の到達点（2026-06-23 時点・実機 23/30勝 = 過去最高）
 
 | 成果物 | 状態 |
