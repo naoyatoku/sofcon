@@ -61,3 +61,6 @@ train/*.err
 
 # Contest-provided header (build.bat auto-generates a dummy locally)
 entry.h
+
+# Golden reference dumps (regenerate: python tools/dump_golden.py)
+golden/
