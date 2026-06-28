@@ -33,32 +33,57 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
 
 ## 📌 別PCでの続き（2026-06-29 引き継ぎ）— まずここを読む
 
-### A. NN 学習（このPCで継続中。別PCへは git pull で引き継ぐ）
-- checkpoint は **iter 3090 付近**まで進行（強い教師＋6ワーカー並列、低電力モードで安定稼働）。
+### 🎯 当面のゴール（締切: 2026-06-29 17:00）
+**自作の forward（NN推論）で提出する。** tokuが `cpp/tensor.h` のテンソルクラスで
+forward 全体を書き直し中。Claude が `golden` 値で**層ごとにレビュー＆テスト**する分担。
+- 進め方は `cpp/NN_FORWARD_SPEC.md` の §5（最短デバッグ手順）に従う。
+- **保険**: 自作は「既存推論の差し替え方式」。17時に間に合わなければ
+  `cpp/inference_impl.h`（既存の正しい forward）に戻すだけで確実に動く版を提出できる。
+
+### A. 自作 forward 支援ツール（今回新規・コミット済み）
+- **`cpp/NN_FORWARD_SPEC.md`** … 実装仕様の決定版。層順序／重みシンボル名＆レイアウト
+  （conv=[Cout,Cin,kH,kW], linear=[out,in] row-major）／各演算定義（BN eps=1e-5、
+  value=**sigmoid**（tanhではない）、policy=softmax）／入力9chの並び／デバッグ手順。
+  ⚠ `cpp/inference.h` の宣言コメントは旧版(64ch/5block/tanh)の記述が残るが、
+  正は `inference_impl.h` と `model/network.py`（16ch/3block/sigmoid）。
+- **`tools/dump_golden.py`** … 固定入力でNNを走らせ、input/stem/block0-2/policy/value の
+  中間活性を `golden/*.bin`（形状ヘッダ付float32）に出力。`golden/summary.txt` にL2と先頭8値。
+  再生成: `python tools/dump_golden.py --checkpoint model/checkpoint_16ch_15x15.pt --seed 42`
+  ⚠ weights.h を更新したら golden も再生成して合わせること（seed/iterに紐づく）。
+- **`cpp/tensor.h`** … tokuのテンソルクラス（WIP）。🔴致命バグ `tensor_2d::v()` の
+  `y*__W*x`→`y*__W + x`（FIXME済、最初に直す）。`__`予約識別子の改名／`__win_cache`の
+  スレッド非安全（dot内でローカルtensor_2d生成へ）も冒頭コメントに記載。
+- レビュー運用: tokuが stem→block0→… と一段ずつ実装、Claudeが golden と数値一致を確認
+  （許容 1e-4）。ズレた最初の層が原因箇所。
+
+### B. 提出パイプライン（検証済み・このPCで通し確認済み）
+- **ビルドは TDM-GCC**（このPCに MSYS2 は無い。`C:\TDM-GCC-64\bin\g++.exe`）:
+  ```
+  C:\TDM-GCC-64\bin\g++.exe -O3 -std=c++14 -shared -static \
+      -static-libgcc -static-libstdc++ -o prog.dll prog.cpp
+  ```
+  → **完全静的リンク。依存DLLは KERNEL32/msvcrt のみ＝libwinpthread-1.dll 不要**
+  （MSYS2版より堅牢、単一ファイル提出可）。3関数エクスポート・NN有効を確認済み。
+- ソース1ファイル化: `python tools/bundle.py --checkpoint model/checkpoint_16ch_15x15.pt --output prog_submit.cpp`
+  → これも単体ビルド成功確認済み。**提出は prog.dll + prog_submit.cpp**。
+- 重み更新: `python tools/export_weights.py --checkpoint model/checkpoint_16ch_15x15.pt --output cpp/weights.h`
+
+### C. NN 学習（このPCで継続中。別PCへは git pull で引き継ぐ）
+- checkpoint は **iter 3110 付近**（強い教師＋6ワーカー並列、低電力モードで安定稼働）。
 - 起動コマンド（AC直挿し必須・スリープ対策済み）:
   ```
   python train/self_play.py --board_h 15 --board_w 15 --channels 16 --blocks 3 \
       --sims 50 --iters 6000 --games 6 --workers 6 --players_min 2 --players_max 3 \
       --save model/checkpoint_16ch_15x15.pt
   ```
+- ⚠ **学習はどちらか一方のPCだけで**（checkpointはbinaryなので両PCで回すと衝突）。
 - **早期評価（head2head: NN-MCTS vs 純粋MCTS, 2P）**: iter2425=50.0%、iter2970も≈50%。
-  → まだ「強い教師が明確に効いた」とは言えず**互角**。実機テスト（明日の環境）が本判断。
-  - 注意: head2head は純粋MCTS相手であって**実機botとは別物**。
-  - `tools/head2head.py` は arch(channels/blocks) を checkpoint から読むよう修正済み。
+  → まだ「強い教師が明確に効いた」とは言えず**互角**。実機テストが本判断。
+  純粋MCTS相手であって**実機botとは別物**。`tools/head2head.py` は arch を checkpoint から読む。
 
-### B. conv2d 用テンソルヘルパー（別PCで続ける本題）→ `cpp/tensor.h`
-- 目的: NN推論の conv2d を、先頭ポインタ+offsetで窓をずらす軽量アクセサで実装。
-  範囲外0返しで padding を自然表現、dot() の x_ofs/y_ofs でカーネルをスライド。
-- **🔴 まず直す致命バグ**: `tensor_2d::v()` の添字 `y*__W*x` → 正しくは `y*__W + x`
-  （ファイル内 FIXME 済み）。これを直さないと conv 出力が全部壊れる。
-- その他の指摘（tensor.h 冒頭コメントに全記載）:
-  - `__name`（先頭2アンダースコア）は処理系予約 → 改名推奨。
-  - `tensor_3d::__win_cache` は共有可変でスレッド非安全。推論はスレッドプール並列
-    なので、重み共有なら dot() 内でローカル tensor_2d を作る方式へ。
-  - 形状ASSERT・conv内部の分岐除去（高速化）は後回しでOK。
-- **次の一手**: バグ修正 → 既存 `cpp/inference_impl.h` の `conv2d` と同入力で
-  出力一致する単体テスト（`cpp/test_tensor.cpp` 想定）を書いて突き合わせる。
-  ASSERT は SOFCON_DEBUG 時のみ有効な自前マクロを用意（本番で abort させない）。
+### ⚠️ 提出戦略のリスク認識
+- 強い教師版(iter3000+)は **実機未検証**。Python評価は互角止まりで旧版超えの証拠なし。
+- 旧版（実機23〜27勝）の重みは git 履歴から復元可能。実機で大きく負けるなら旧重みへ撤退も可。
 
 ---
 
