@@ -31,14 +31,41 @@ void PlayStage(char floor[STAGE_Y_MAX][STAGE_X_MAX],
 
 ---
 
-## 📌 別PCでの続き（2026-06-29 引き継ぎ）— まずここを読む
+## 📌 自作forward 自由研究（締切後・ゆっくりやる）— まずここを読む
 
-### 🎯 当面のゴール（締切: 2026-06-29 17:00）
-**自作の forward（NN推論）で提出する。** tokuが `cpp/tensor.h` のテンソルクラスで
-forward 全体を書き直し中。Claude が `golden` 値で**層ごとにレビュー＆テスト**する分担。
-- 進め方は `cpp/NN_FORWARD_SPEC.md` の §5（最短デバッグ手順）に従う。
-- **保険**: 自作は「既存推論の差し替え方式」。17時に間に合わなければ
-  `cpp/inference_impl.h`（既存の正しい forward）に戻すだけで確実に動く版を提出できる。
+### 結果サマリ（2026-06-29 締切時点）
+- **コンテスト提出は `prog.dll`（既存 inference_impl.h の forward）で確保済み。実機 23〜24勝**。
+  6敗はパリティ不利で理論上勝てない局面（時間延長しても変わらず確認済み）。
+- 自作forward（`cpp/tensor.h`）は**間に合わず → 締切後に自由研究として継続**。提出は確保済みなので気楽にやる。
+
+### 🎯 ゴール
+`cpp/tensor.h` のテンソルクラスで forward を自作し、`golden/*.bin` と層ごとに数値一致させる
+（許容 1e-4）。全段一致したら prog.cpp の推論を差し替え。差し替え方式なので最悪 inference_impl.h に戻せる。
+
+### ▶ 再開手順（この順でやる）
+1. **golden 生成**（毎回必要・gitignore対象）:
+   `python tools/dump_golden.py --checkpoint model/checkpoint_16ch_15x15.pt --seed 42`
+   → 期待L2: input=15.30 / **stem=40.71** / block0=65.58 / block1=72.32 / block2=86.41 /
+     policy_probs=0.95 / value_vec=1.14 / value0_sigmoid=0.477288
+2. **`cpp/tensor.h` の🔴致命バグを直す**: `tensor_2d::v()` の `y*__W*x` → `y*__W + x`（最初に！）
+3. **stem 実装**（conv→BN→ReLU）→ 下記ハーネスで `stem` 照合。
+4. block0/1/2 → policy → value と一段ずつ照合。ズレた最初の段が原因箇所。
+
+### 🔧 照合ハーネス（今回用意・コミット済み）
+- **`cpp/golden_check.h`** … `golden::check("stem", my_ptr, 16*15*15)` の1行で
+  L2(golden)/L2(diff)/最大差/先頭8値を表示し、max差<1e-4 で「一致✓」。
+  テスト .cpp で `#include "cpp/golden_check.h"` して各段で呼ぶだけ。
+  ビルド例: `g++ -O2 -std=c++14 -I. your_test.cpp -o test && ./test`
+- 仕様の詳細は `cpp/NN_FORWARD_SPEC.md`（層順序・重みレイアウト・各演算定義・入力9chの並び）。
+
+### ⚠ 注意・引き継ぎメモ
+- **2026-06-29 時点、repo の `cpp/tensor.h` は v() バグ未修正の初期版**。当日書いた stem/BN は
+  保存されておらず未反映（git クリーン）。再開時は手順2（v()修正）からやり直す前提。
+- BN/ReLU/sigmoid は要素独立なので **in-place 書き換えで結果は正しい**（書き換え対象は活性バッファのみ。
+  weights.h の重み・mean/var/γ/β は読むだけ）。conv だけは入力と出力を**必ず別バッファ**に（周囲を読むため）。
+- ビルド機: **このPCは MSYS2**（`C:\msys64\mingw64\bin\g++.exe`）。週末のGPU機は TDM-GCC だった。
+  提出用 prog.dll は完全静的リンク: `g++ -O3 -std=c++14 -shared -static -static-libgcc -static-libstdc++ -o prog.dll prog.cpp`
+  → 依存は KERNEL32/msvcrt のみ（libwinpthread 不要）。entry.h が無ければダミーを置く。
 
 ### A. 自作 forward 支援ツール（今回新規・コミット済み）
 - **`cpp/NN_FORWARD_SPEC.md`** … 実装仕様の決定版。層順序／重みシンボル名＆レイアウト
